@@ -140,6 +140,7 @@ type CheckinRow struct {
 	Source          string
 	Status          string
 	Answer          string // "" when NULL
+	AnsweredChannel string // metadata.answered_channel, or "telegram" fallback for legacy rows
 	PromptMessageID int64  // 0 when NULL
 	PromptedAt      time.Time
 	AnsweredAt      time.Time // zero when NULL
@@ -181,6 +182,7 @@ type CheckinCoverageSummary struct {
 type CheckinCoverageRow struct {
 	Date                   string     `json:"date"`
 	Source                 string     `json:"source"`
+	AnsweredChannel        string     `json:"answered_channel,omitempty"`
 	Status                 string     `json:"status"`
 	Answer                 string     `json:"answer,omitempty"`
 	PromptedAt             *time.Time `json:"prompted_at,omitempty"`
@@ -234,9 +236,9 @@ func (s *DB) SaveCheckinPrompted(date, source string, msgID int64, promptedAt, e
 }
 
 // SaveCheckinAnswer transitions a row based on the pure helper's
-// decision. Reads current status + expires_at inside a transaction so
-// a racing scheduler-expire cannot clobber a real answer. Returns the
-// resulting status (answered | late_answered).
+// decision with first-write-wins semantics: an already answered or
+// late_answered row is never overwritten. Returns the resulting status
+// (answered | late_answered).
 func (s *DB) SaveCheckinAnswer(date, source, answer string, answeredAt time.Time) (string, error) {
 	if err := ValidateCheckinAnswer(answer); err != nil {
 		return "", err
@@ -256,15 +258,25 @@ func (s *DB) SaveCheckinAnswer(date, source, answer string, answeredAt time.Time
 		WHERE date = $1 AND source = $2 FOR UPDATE`, date, source).Scan(&status, &expiresAt); err != nil {
 		return "", err
 	}
+	if status == CheckinStatusAnswered || status == CheckinStatusLateAnswered {
+		return status, tx.Commit(ctx)
+	}
 	nextStatus, err := nextCheckinStatus(status, "tap", expiresAt, answeredAt)
 	if err != nil {
 		return "", err
 	}
+	channel := source
+	if channel != CheckinChannelIOSApp && channel != CheckinChannelWeb && channel != CheckinChannelTelegram {
+		channel = CheckinChannelTelegram
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE subjective_checkins
-		   SET status = $3, answer = $4, answered_at = $5
+		   SET status = $3,
+		       answer = $4,
+		       answered_at = $5,
+		       metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{answered_channel}', to_jsonb($6::text), true)
 		 WHERE date = $1 AND source = $2`,
-		date, source, nextStatus, answer, answeredAt); err != nil {
+		date, source, nextStatus, answer, answeredAt, channel); err != nil {
 		return "", err
 	}
 	return nextStatus, tx.Commit(ctx)
@@ -307,13 +319,48 @@ func (s *DB) ExpireCheckin(date, source string, now time.Time) (string, error) {
 	return CheckinStatusExpired, nil
 }
 
-// ExpireOverdueTelegramCheckins finalizes unanswered prompts even in quiet hours
-// and after a restart on another date. Answered rows and other channels are unchanged.
+// ExpireOverdueTelegramCheckins finalizes unanswered prompts across canonical
+// channels (inbox and telegram) even in quiet hours and after a restart on
+// another date. Answered rows are unchanged.
 func (s *DB) ExpireOverdueTelegramCheckins(now time.Time) error {
+	return s.ExpireOverdueCheckins(now)
+}
+
+// ExpireOverdueCheckins finalizes unanswered inbox and telegram check-in
+// prompts whose expires_at has passed.
+func (s *DB) ExpireOverdueCheckins(now time.Time) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := s.pool.Exec(ctx, `UPDATE subjective_checkins SET status=$1 WHERE source=$2 AND status=$3 AND expires_at <= $4`, CheckinStatusExpired, CheckinSourceTelegram, CheckinStatusPrompted, now)
+	_, err := s.pool.Exec(ctx, `
+		UPDATE subjective_checkins
+		   SET status = $1
+		 WHERE source IN ($2, $3)
+		   AND status = $4
+		   AND expires_at <= $5`,
+		CheckinStatusExpired, CheckinSourceInbox, CheckinSourceTelegram, CheckinStatusPrompted, now)
 	return err
+}
+
+// ExpireCanonicalCheckin transitions an overdue prompted row for date across
+// inbox and telegram sources to expired.
+func (s *DB) ExpireCanonicalCheckin(date string, now time.Time) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE subjective_checkins
+		   SET status = $2
+		 WHERE date = $1
+		   AND source IN ($3, $4)
+		   AND status = $5
+		   AND expires_at <= $6`,
+		date, CheckinStatusExpired, CheckinSourceInbox, CheckinSourceTelegram, CheckinStatusPrompted, now)
+	if err != nil {
+		return "", err
+	}
+	if tag.RowsAffected() == 0 {
+		return "", nil
+	}
+	return CheckinStatusExpired, nil
 }
 
 // GetTodayCheckin returns the row for (date, source). Returns
@@ -326,11 +373,12 @@ func (s *DB) GetTodayCheckin(date, source string) (*CheckinRow, error) {
 	var answer *string
 	var msgID *int64
 	var answeredAt *time.Time
+	var rawMeta []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT status, answer, prompt_message_id, prompted_at, answered_at, expires_at
+		SELECT status, answer, prompt_message_id, prompted_at, answered_at, expires_at, metadata
 		  FROM subjective_checkins
 		 WHERE date = $1 AND source = $2`, date, source).
-		Scan(&row.Status, &answer, &msgID, &row.PromptedAt, &answeredAt, &row.ExpiresAt)
+		Scan(&row.Status, &answer, &msgID, &row.PromptedAt, &answeredAt, &row.ExpiresAt, &rawMeta)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -346,19 +394,67 @@ func (s *DB) GetTodayCheckin(date, source string) (*CheckinRow, error) {
 	if answeredAt != nil {
 		row.AnsweredAt = *answeredAt
 	}
+	if row.Status == CheckinStatusAnswered || row.Status == CheckinStatusLateAnswered {
+		row.AnsweredChannel = extractAnsweredChannel(rawMeta, row.Source)
+	}
+	return row, nil
+}
+
+// GetCanonicalTodayCheckin returns the single canonical check-in row for date
+// across inbox and legacy telegram sources. Returns (nil, nil) when absent.
+func (s *DB) GetCanonicalTodayCheckin(date string) (*CheckinRow, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	row := &CheckinRow{Date: date}
+	var answer *string
+	var msgID *int64
+	var answeredAt *time.Time
+	var rawMeta []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT source, status, answer, prompt_message_id, prompted_at, answered_at, expires_at, metadata
+		  FROM subjective_checkins
+		 WHERE date = $1 AND source IN ($2, $3)
+		 ORDER BY
+		   CASE WHEN status IN ('answered','late_answered') THEN 0 ELSE 1 END,
+		   CASE WHEN source = $3 THEN 0 ELSE 1 END
+		 LIMIT 1`, date, CheckinSourceInbox, CheckinSourceTelegram).
+		Scan(&row.Source, &row.Status, &answer, &msgID, &row.PromptedAt, &answeredAt, &row.ExpiresAt, &rawMeta)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if answer != nil {
+		row.Answer = *answer
+	}
+	if msgID != nil {
+		row.PromptMessageID = *msgID
+	}
+	if answeredAt != nil {
+		row.AnsweredAt = *answeredAt
+	}
+	if row.Status == CheckinStatusAnswered || row.Status == CheckinStatusLateAnswered {
+		row.AnsweredChannel = extractAnsweredChannel(rawMeta, row.Source)
+	}
 	return row, nil
 }
 
 // HistoricalCheckinScenario returns only the review-safe presence state for
-// a historical Telegram check-in. It deliberately does not select answer,
-// timestamps, message IDs, or any health content. A pending, expired, late,
-// or absent row is "absent" because it was not a timely optional label.
+// a historical check-in across inbox and telegram sources. It deliberately
+// does not select answer, timestamps, message IDs, or any health content.
+// A pending, expired, late, or absent row is "absent" because it was not a
+// timely optional label.
 func (s *DB) HistoricalCheckinScenario(ctx context.Context, date string) (string, error) {
 	var status string
 	err := s.pool.QueryRow(ctx, `
 		SELECT status
 		  FROM subjective_checkins
-		 WHERE date = $1 AND source = $2`, date, CheckinSourceTelegram).Scan(&status)
+		 WHERE date = $1 AND source IN ($2, $3)
+		 ORDER BY
+		   CASE WHEN status = 'answered' THEN 0 ELSE 1 END,
+		   CASE WHEN source = $3 THEN 0 ELSE 1 END
+		 LIMIT 1`, date, CheckinSourceInbox, CheckinSourceTelegram).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "absent", nil
 	}
@@ -396,13 +492,32 @@ func (s *DB) GetCheckinCoverage(today, source string, days int) (*CheckinCoverag
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	rows, err := s.pool.Query(ctx, `
-		SELECT date, source, status, answer, prompt_message_id, prompted_at, answered_at, expires_at
-		  FROM subjective_checkins
-		 WHERE source = $1
-		   AND date <= $2
-		 ORDER BY date DESC
-		 LIMIT $3`, source, today, days)
+	var rows pgx.Rows
+	var err error
+	canonical := source == "" || source == "all"
+	if canonical {
+		rows, err = s.pool.Query(ctx, `
+			SELECT date, source, status, answer, prompt_message_id, prompted_at, answered_at, expires_at, metadata
+			  FROM (
+			    SELECT DISTINCT ON (date) date, source, status, answer, prompt_message_id, prompted_at, answered_at, expires_at, metadata
+			      FROM subjective_checkins
+			     WHERE source IN ($1, $2)
+			       AND date <= $3
+			     ORDER BY date DESC,
+			       CASE WHEN status IN ('answered','late_answered') THEN 0 ELSE 1 END,
+			       CASE WHEN source = $2 THEN 0 ELSE 1 END
+			  ) canonical
+			 ORDER BY date DESC
+			 LIMIT $4`, CheckinSourceInbox, CheckinSourceTelegram, today, days)
+	} else {
+		rows, err = s.pool.Query(ctx, `
+			SELECT date, source, status, answer, prompt_message_id, prompted_at, answered_at, expires_at, metadata
+			  FROM subjective_checkins
+			 WHERE source = $1
+			   AND date <= $2
+			 ORDER BY date DESC
+			 LIMIT $3`, source, today, days)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -412,7 +527,11 @@ func (s *DB) GetCheckinCoverage(today, source string, days int) (*CheckinCoverag
 	if err != nil {
 		return nil, err
 	}
-	coverage, err := buildCheckinCoverage(today, source, days, entries)
+	reportSource := source
+	if canonical {
+		reportSource = "all"
+	}
+	coverage, err := buildCheckinCoverage(today, reportSource, days, entries)
 	if err != nil {
 		return nil, err
 	}
@@ -426,17 +545,35 @@ func (s *DB) GetCheckinCoverage(today, source string, days int) (*CheckinCoverag
 	if err != nil {
 		return nil, err
 	}
-	return buildCheckinCoverageWithSLA(coverage, today, from, source, enabledSince, calendarEntries)
+	return buildCheckinCoverageWithSLA(coverage, today, from, reportSource, enabledSince, calendarEntries)
 }
 
 func (s *DB) getCheckinRowsBetween(ctx context.Context, source, from, to string) ([]CheckinRow, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT date, source, status, answer, prompt_message_id, prompted_at, answered_at, expires_at
-		  FROM subjective_checkins
-		 WHERE source = $1
-		   AND date >= $2
-		   AND date <= $3
-		 ORDER BY date DESC`, source, from, to)
+	var rows pgx.Rows
+	var err error
+	if source == "" || source == "all" {
+		rows, err = s.pool.Query(ctx, `
+			SELECT date, source, status, answer, prompt_message_id, prompted_at, answered_at, expires_at, metadata
+			  FROM (
+			    SELECT DISTINCT ON (date) date, source, status, answer, prompt_message_id, prompted_at, answered_at, expires_at, metadata
+			      FROM subjective_checkins
+			     WHERE source IN ($1, $2)
+			       AND date >= $3
+			       AND date <= $4
+			     ORDER BY date DESC,
+			       CASE WHEN status IN ('answered','late_answered') THEN 0 ELSE 1 END,
+			       CASE WHEN source = $2 THEN 0 ELSE 1 END
+			  ) canonical
+			 ORDER BY date DESC`, CheckinSourceInbox, CheckinSourceTelegram, from, to)
+	} else {
+		rows, err = s.pool.Query(ctx, `
+			SELECT date, source, status, answer, prompt_message_id, prompted_at, answered_at, expires_at, metadata
+			  FROM subjective_checkins
+			 WHERE source = $1
+			   AND date >= $2
+			   AND date <= $3
+			 ORDER BY date DESC`, source, from, to)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -451,7 +588,8 @@ func scanCheckinRows(rows pgx.Rows) ([]CheckinRow, error) {
 		var answer *string
 		var msgID *int64
 		var answeredAt *time.Time
-		if err := rows.Scan(&row.Date, &row.Source, &row.Status, &answer, &msgID, &row.PromptedAt, &answeredAt, &row.ExpiresAt); err != nil {
+		var rawMeta []byte
+		if err := rows.Scan(&row.Date, &row.Source, &row.Status, &answer, &msgID, &row.PromptedAt, &answeredAt, &row.ExpiresAt, &rawMeta); err != nil {
 			return nil, err
 		}
 		if answer != nil {
@@ -462,6 +600,9 @@ func scanCheckinRows(rows pgx.Rows) ([]CheckinRow, error) {
 		}
 		if answeredAt != nil {
 			row.AnsweredAt = *answeredAt
+		}
+		if row.Status == CheckinStatusAnswered || row.Status == CheckinStatusLateAnswered {
+			row.AnsweredChannel = extractAnsweredChannel(rawMeta, row.Source)
 		}
 		entries = append(entries, row)
 	}
@@ -626,12 +767,13 @@ func checkinCoverageRow(entry CheckinRow) CheckinCoverageRow {
 	promptedAt := entry.PromptedAt
 	expiresAt := entry.ExpiresAt
 	row := CheckinCoverageRow{
-		Date:       entry.Date,
-		Source:     entry.Source,
-		Status:     entry.Status,
-		Answer:     entry.Answer,
-		PromptedAt: &promptedAt,
-		ExpiresAt:  &expiresAt,
+		Date:            entry.Date,
+		Source:          entry.Source,
+		AnsweredChannel: entry.AnsweredChannel,
+		Status:          entry.Status,
+		Answer:          entry.Answer,
+		PromptedAt:      &promptedAt,
+		ExpiresAt:       &expiresAt,
 	}
 	if !entry.AnsweredAt.IsZero() {
 		answeredAt := entry.AnsweredAt

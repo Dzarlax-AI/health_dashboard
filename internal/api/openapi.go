@@ -45,6 +45,12 @@ func GenerateOpenAPI() ([]byte, error) {
 		"ReportHistoryResponse":           ReportHistoryResponse{},
 		"ReportHistoryDetail":             storage.ReportHistoryDetail{},
 		"ReportHistoryItem":               storage.ReportHistoryItem{},
+		"InboxFeedResponse":               InboxFeedResponse{},
+		"InboxDetailResponse":             InboxDetailResponse{},
+		"InboxPendingResponse":            InboxPendingResponse{},
+		"PromptAnswerRequest":             PromptAnswerRequest{},
+		"PromptAnswerResponse":            PromptAnswerResponse{},
+		"PromptExpiredResponse":           PromptExpiredResponse{},
 		"SectionResponse":                 SectionResponse{},
 		"SessionResponse":                 SessionResponse{},
 		"NotificationSettingsResponse":    NotificationSettingsResponse{},
@@ -115,7 +121,12 @@ func GenerateOpenAPI() ([]byte, error) {
 	for _, name := range []string{"LatestMetricsResponse", "MetricCatalogResponse"} {
 		schemas[name].(map[string]any)["type"] = "array"
 	}
-	for name, field := range map[string]string{"MetricQuantityResponse": "points", "SectionsResponse": "sections"} {
+	for name, field := range map[string]string{
+		"MetricQuantityResponse": "points",
+		"SectionsResponse":       "sections",
+		"InboxFeedResponse":      "items",
+		"InboxPendingResponse":   "prompts",
+	} {
 		schemas[name].(map[string]any)["properties"].(map[string]any)[field].(map[string]any)["type"] = "array"
 	}
 	configureMaintenanceInputs(schemas)
@@ -236,6 +247,34 @@ func clientPaths() map[string]any {
 	todayInsightsOperation["responses"].(map[string]any)["503"] = plainTextResponse(
 		"Current-day source data is not available yet.",
 	)
+	inboxListOperation := getOperation(
+		"listInbox",
+		"Chronological feed of morning reports and morning check-in prompts",
+		[]any{
+			langParameter(),
+			integerQueryParameter("limit", 20, 1, 100),
+			plainStringQueryParameter("cursor", "Opaque continuation cursor ordered by (created_at, id)."),
+		},
+		jsonResponseRef("InboxFeedResponse"),
+	)
+	inboxListOperation["responses"].(map[string]any)["404"] = plainTextResponse("In-app Inbox is disabled for this profile.")
+	inboxPendingOperation := getOperation(
+		"listPendingInboxPrompts",
+		"Active unanswered morning check-in prompts for today",
+		[]any{langParameter()},
+		jsonResponseRef("InboxPendingResponse"),
+	)
+	inboxPendingOperation["responses"].(map[string]any)["404"] = plainTextResponse("In-app Inbox is disabled for this profile.")
+	inboxItemOperation := getOperation(
+		"getInboxItem",
+		"Inbox item detail with normalized report text or canonical check-in state",
+		[]any{
+			map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string", "format": "uuid"}},
+			langParameter(),
+		},
+		jsonResponseRef("InboxDetailResponse"),
+	)
+	inboxItemOperation["responses"].(map[string]any)["404"] = plainTextResponse("In-app Inbox is disabled for this profile, or the requested item was not found.")
 	sleepBalanceOperation := getOperation(
 		"getSleepDurationBalance",
 		"Transparent fourteen-period sleep-duration accounting relative to a manual goal",
@@ -319,6 +358,18 @@ func clientPaths() map[string]any {
 		},
 		"/api/reports/history/{id}": map[string]any{
 			"get": getOperation("getReportHistory", "Archived report details", []any{map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string", "format": "uuid"}}}, jsonHistoryDetailResponse()),
+		},
+		"/api/inbox": map[string]any{
+			"get": inboxListOperation,
+		},
+		"/api/inbox/pending": map[string]any{
+			"get": inboxPendingOperation,
+		},
+		"/api/inbox/{id}": map[string]any{
+			"get": inboxItemOperation,
+		},
+		"/api/prompts/{prompt_id}/answer": map[string]any{
+			"post": promptAnswerOperation(),
 		},
 		"/api/today-insights": map[string]any{
 			"get": todayInsightsOperation,
@@ -446,6 +497,35 @@ func putOperation(operationID, summary, requestSchema string, okResponse map[str
 			"200": okResponse,
 			"401": jsonErrorResponse("Authentication required."),
 			"500": plainTextResponse("The backend could not update or encode the tenant response."),
+		},
+	}
+}
+
+func promptAnswerOperation() map[string]any {
+	return map[string]any{
+		"operationId": "answerInboxPrompt",
+		"summary":     "Submit a canonical answer for an active morning check-in prompt",
+		"parameters": []any{
+			map[string]any{
+				"name":     "prompt_id",
+				"in":       "path",
+				"required": true,
+				"schema":   map[string]any{"type": "string", "format": "uuid"},
+			},
+		},
+		"requestBody": jsonRequestBody("PromptAnswerRequest"),
+		"responses": map[string]any{
+			"200": jsonResponseRef("PromptAnswerResponse"),
+			"400": jsonErrorResponse("Invalid JSON, answer choice, or client channel."),
+			"401": jsonErrorResponse("Authentication required."),
+			"404": plainTextResponse("Unknown prompt or prompt belongs to another tenant."),
+			"409": map[string]any{
+				"description": "Prompt local date does not match tenant-local today; row left unchanged.",
+				"content": map[string]any{
+					"application/json": map[string]any{"schema": schemaRef("PromptExpiredResponse")},
+				},
+			},
+			"500": jsonErrorResponse("The backend could not save the prompt answer."),
 		},
 	}
 }

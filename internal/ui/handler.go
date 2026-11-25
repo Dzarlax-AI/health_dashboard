@@ -60,8 +60,9 @@ type Handler struct {
 	// call to setWebhook/deleteWebhook and persist a status badge.
 	// Nil registrar disables the side effect entirely — the settings
 	// save still succeeds, just no Telegram-side update.
-	webhookRegistrar notify.WebhookRegistrar
-	webhookBaseURL   string
+	webhookRegistrar  notify.WebhookRegistrar
+	webhookBaseURL    string
+	onCheckinAnswered func(db *storage.DB, schema string)
 }
 
 func New(mgr *tenants.Manager, reg *registry.Registry, trustFwdAuth bool) *Handler {
@@ -94,6 +95,10 @@ func (h *Handler) ConfigureWebhook(registrar notify.WebhookRegistrar, baseURL st
 // Called from the setup wizard. Can be used to start per-tenant schedulers.
 func (h *Handler) OnTenantCreated(fn func(schema string)) {
 	h.onTenantCreated = fn
+}
+
+func (h *Handler) ConfigureCheckinRefresh(fn func(db *storage.DB, schema string)) {
+	h.onCheckinAnswered = fn
 }
 
 // adminGuard wraps guard() and additionally requires is_admin.
@@ -213,6 +218,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/ai-briefing", h.guard(h.aiBriefing))
 	mux.HandleFunc("GET /api/reports/history", h.guard(h.reportHistoryList))
 	mux.HandleFunc("GET /api/reports/history/{id}", h.guard(h.reportHistoryDetail))
+	mux.HandleFunc("GET /api/inbox", h.guard(h.inboxList))
+	mux.HandleFunc("GET /api/inbox/pending", h.guard(h.inboxPending))
+	mux.HandleFunc("GET /api/inbox/{id}", h.guard(h.inboxDetail))
+	mux.HandleFunc("POST /api/prompts/{prompt_id}/answer", h.guard(h.promptAnswer))
 	mux.HandleFunc("GET /api/today-insights", h.guard(h.todayInsights))
 	mux.HandleFunc("GET /api/section/{key}", h.guard(h.sectionAPI))
 	mux.HandleFunc("GET /api/sections", h.guard(h.sectionsCatalogue))
@@ -4037,7 +4046,7 @@ func (h *Handler) adminCheckinCoverage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	today := tenantLocalToday(h, scope.DB, scope.Schema)
-	coverage, err := scope.DB.GetCheckinCoverage(today, storage.CheckinSourceTelegram, days)
+	coverage, err := scope.DB.GetCheckinCoverage(today, "all", days)
 	if err != nil {
 		http.Error(w, "checkin coverage: "+err.Error(), http.StatusInternalServerError)
 		return

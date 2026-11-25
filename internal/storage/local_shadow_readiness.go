@@ -98,7 +98,7 @@ func (s *DB) readinessWithSleep(ctx context.Context, date string, blocks map[str
 	}
 	resp := health.RenderReadinessBriefing(*data, "en", &projection, quality)
 	var checkin *health.SubjectiveCheckinSummary
-	if row, err := s.GetTodayCheckin(date, CheckinSourceTelegram); err == nil && row != nil {
+	if row, err := s.GetCanonicalTodayCheckin(date); err == nil && row != nil {
 		checkin = &health.SubjectiveCheckinSummary{Status: row.Status, Answer: row.Answer}
 	}
 	var sleepDisruption *health.MetricEvidenceInput

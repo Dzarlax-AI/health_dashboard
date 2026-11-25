@@ -84,8 +84,10 @@ func (s *DB) HasSentMorningReport(date string) bool {
 }
 
 // HasSettledMorningReport reports whether the morning lane must stop for a date.
-// Reserved and ambiguous deliveries remain at-most-once even without sent_at;
-// definitive failures stay retryable. This does not claim successful delivery.
+// Sent, ambiguous, active (<30s) reserved, and already-attempted reserved
+// deliveries stay settled at-most-once. Definitive failures (`failed`) and
+// stale (>=30s) zero-attempt reservations backed by an archived report_history
+// row remain recoverable so the scheduler can finish delivery after a crash.
 func (s *DB) HasSettledMorningReport(date string) bool {
 	if s.HasSentMorningReport(date) {
 		return true
@@ -93,7 +95,33 @@ func (s *DB) HasSettledMorningReport(date string) bool {
 	ctx, cancel := queryCtx()
 	defer cancel()
 	var settled bool
-	s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM notification_deliveries WHERE delivery_key=$1 AND status IN ('reserved','sent','ambiguous'))`, "report:morning:"+date).Scan(&settled)
+	s.pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			  FROM notification_deliveries n
+			 WHERE n.delivery_key = $1
+			   AND (
+			     n.status IN ('sent', 'ambiguous')
+			     OR (
+			       n.status = 'reserved'
+			       AND NOT (
+			         n.reserved_at <= clock_timestamp() - INTERVAL '30 seconds'
+			         AND EXISTS(
+			           SELECT 1
+			             FROM report_history h
+			            WHERE h.delivery_key = n.delivery_key
+			         )
+			         AND NOT EXISTS(
+			           SELECT 1
+			             FROM report_delivery_attempts a
+			             JOIN report_history h ON h.id = a.report_id
+			            WHERE h.delivery_key = n.delivery_key
+			              AND (a.lease_token = n.lease_token OR (a.lease_token IS NULL AND a.reserved_at >= n.reserved_at))
+			         )
+			       )
+			     )
+			   )
+		)`, "report:morning:"+date).Scan(&settled)
 	return settled
 }
 

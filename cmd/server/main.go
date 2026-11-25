@@ -1019,10 +1019,7 @@ func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *regis
 				return notify.CheckinTenant{}, false
 			}
 			cfg := db.GetNotifyConfig(notifyDefaults)
-			loc := time.Local
-			if l, err := time.LoadLocation(cfg.Timezone); err == nil && cfg.Timezone != "" {
-				loc = l
-			}
+			todayInTZ := time.Now().In(storage.ResolveReportLocation(cfg.Timezone)).Format("2006-01-02")
 			bot := notify.NewBot(cfg.Token, cfg.ChatID)
 			var refresh func()
 			if refreshToday != nil {
@@ -1031,8 +1028,8 @@ func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *regis
 			return notify.CheckinTenant{
 				Schema:    schema,
 				Lang:      cfg.Lang,
-				TodayInTZ: time.Now().In(loc).Format("2006-01-02"),
-				Router:    &liveCheckinRouter{db: db, bot: bot, checkinMu: mgr.CheckinSendMuFor(schema), refreshToday: refresh},
+				TodayInTZ: todayInTZ,
+				Router:    &liveCheckinRouter{db: db, bot: bot, todayInTZ: todayInTZ, checkinMu: mgr.CheckinSendMuFor(schema), refreshToday: refresh},
 			}, true
 		},
 	}))
@@ -1045,6 +1042,7 @@ func registerCheckinWebhook(mux *http.ServeMux, mgr *tenants.Manager, reg *regis
 type liveCheckinRouter struct {
 	db           *storage.DB
 	bot          *notify.Bot
+	todayInTZ    string
 	checkinMu    *sync.Mutex
 	refreshToday func()
 }
@@ -1054,8 +1052,13 @@ func (r *liveCheckinRouter) SaveAnswer(date, source, answer string, answeredAt t
 		r.checkinMu.Lock()
 		defer r.checkinMu.Unlock()
 	}
-	status, err := r.db.SaveCheckinAnswer(date, source, answer, answeredAt)
-	if err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := r.db.AnswerCheckinByDate(ctx, date, r.todayInTZ, storage.CheckinChannelTelegram, answer, answeredAt)
+	if err != nil {
+		return "", err
+	}
+	if res.Status == storage.CheckinAnswerStatusSaved && res.Timing == storage.CheckinTimingOnTime {
 		if evidenceErr := r.db.RecordWakeCheckinEvidence(date, answeredAt); evidenceErr != nil {
 			log.Printf("checkin: record wake evidence for %s: %v", date, evidenceErr)
 		}
@@ -1063,7 +1066,7 @@ func (r *liveCheckinRouter) SaveAnswer(date, source, answer string, answeredAt t
 			r.refreshToday()
 		}
 	}
-	return status, err
+	return res.EffectiveStatus, nil
 }
 func (r *liveCheckinRouter) SaveContextPromptAnswer(promptID, category, source string, answeredAt time.Time) (string, error) {
 	return r.db.SaveContextPromptAnswer(promptID, category, source, answeredAt)
@@ -1091,7 +1094,9 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 			return
 		}
 		cfg := db.GetNotifyConfig(defaults)
-		if !cfg.Enabled() {
+		inboxEnabled := storage.IsInAppInboxEnabled(db)
+		telegramEnabled := cfg.Enabled()
+		if !inboxEnabled && !telegramEnabled {
 			return
 		}
 		ncfg := buildNotifyCfg(db, cfg)
@@ -1101,10 +1106,13 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 			return
 		}
 		today := now.Format("2006-01-02")
-		bot := notify.NewBot(cfg.Token, cfg.ChatID)
-		reportSent := db.HasSettledMorningReport(today)
-		eligible := reportSent
-		if !reportSent {
+		var bot *notify.Bot
+		if telegramEnabled {
+			bot = notify.NewBot(cfg.Token, cfg.ChatID)
+		}
+		reportDone := morningReportDoneForLifecycle(db, today, inboxEnabled, telegramEnabled)
+		eligible := reportDone
+		if !reportDone {
 			wake, err := db.ComputeMorningWakeStatus(today, loc, now)
 			if err != nil {
 				log.Printf("morning report: wake detection: %v", err)
@@ -1116,7 +1124,73 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 			if morningAIShouldPrewarm(ncfg, now, eligible) {
 				db.EnsureTodayAIInsightAsyncContext(ctx, ncfg.AIConfig, cfg.Lang)
 			}
-			if eligible {
+			if inboxEnabled {
+				published, _, pubErr := db.GetPublishedMorningInboxReport(ctx, today)
+				if pubErr != nil {
+					log.Printf("morning report: read published inbox report: %v", pubErr)
+				}
+				if published != nil {
+					eligible = true
+				} else if eligible {
+					deadline := morningAIReportDeadline(db, cfg.Lang, today, now)
+					if sendMu != nil {
+						sendMu.Lock()
+					}
+					if existing, _, err := db.GetPublishedMorningInboxReport(ctx, today); err == nil && existing != nil {
+						published = existing
+					} else {
+						ready, failed := false, false
+						aiErr := error(nil)
+						if ncfg.AIConfig.Enabled() {
+							var briefing *health.BriefingResponse
+							briefing, aiErr = db.GetHealthBriefing(cfg.Lang)
+							if aiErr == nil {
+								_, blocks, generationFailed, stateErr := db.MorningReportAIState(ctx, ncfg.AIConfig, cfg.Lang, today, briefing)
+								if stateErr != nil {
+									log.Printf("morning report: AI cache evidence unavailable: %v", stateErr)
+								}
+								ready = stateErr == nil && len(blocks) != 0
+								failed = stateErr == nil && generationFailed
+							}
+						}
+						gateNow := time.Now().In(loc)
+						if ncfg.AIConfig.Enabled() {
+							log.Printf("morning report: AI gate ready=%v failed=%v wait_elapsed=%s wait_expired=%v", ready, failed, gateNow.Sub(deadline.Add(-morningAIWaitBudget)).Round(time.Millisecond), !gateNow.Before(deadline))
+						}
+						if aiErr == nil && morningAIAllowsReport(ncfg.AIConfig.Enabled(), ready, failed, gateNow, deadline) {
+							fallbackReason := ""
+							if ncfg.AIConfig.Enabled() && !ready {
+								log.Printf("morning report: AI fallback failed=%v wait_expired=%v", failed, !time.Now().Before(deadline))
+								fallbackReason = "wait_budget_exhausted"
+								if failed {
+									fallbackReason = "generation_failed"
+								}
+							}
+							var publishErr error
+							published, _, _, _, publishErr = notify.PublishMorningSmartOpts(db, ncfg, notify.MorningSendOpts{
+								Force:            action == notify.MorningActionForce,
+								RequireAI:        ready,
+								AIFallbackReason: fallbackReason,
+							})
+							if publishErr != nil {
+								log.Printf("morning report: publish inbox: %v", publishErr)
+							}
+						}
+					}
+					if sendMu != nil {
+						sendMu.Unlock()
+					}
+				}
+				if published != nil && telegramEnabled && !db.HasSettledMorningReport(today) {
+					runMorningReportAttempt(sendMu,
+						func() bool { return db.HasSettledMorningReport(today) },
+						func() (bool, string, error) {
+							attempted, err := notify.DeliverMorningReportToTelegram(bot, db, ncfg, published)
+							return attempted, "inbox_published", err
+						},
+						func() error { return db.MarkMorningReportSent(today) })
+				}
+			} else if eligible {
 				deadline := morningAIReportDeadline(db, cfg.Lang, today, now)
 				runMorningReportAttempt(sendMu,
 					func() bool { return db.HasSettledMorningReport(today) },
@@ -1195,7 +1269,8 @@ schedulerLoop:
 		lastTenantDay = currentTenantDay
 
 		cfg := db.GetNotifyConfig(defaults)
-		if !cfg.Enabled() {
+		inboxEnabled := storage.IsInAppInboxEnabled(db)
+		if !inboxEnabled && !cfg.Enabled() {
 			select {
 			case <-ctx.Done():
 				return
@@ -1247,14 +1322,18 @@ schedulerLoop:
 		}
 
 		cfg = db.GetNotifyConfig(defaults)
-		if !cfg.Enabled() {
+		inboxEnabled = storage.IsInAppInboxEnabled(db)
+		if !inboxEnabled && !cfg.Enabled() {
 			continue
 		}
 		ncfg = buildNotifyCfg(db, cfg)
-		bot := notify.NewBot(cfg.Token, cfg.ChatID)
+		var bot *notify.Bot
+		if cfg.Enabled() {
+			bot = notify.NewBot(cfg.Token, cfg.ChatID)
+		}
 		if isMorning {
 			runMorningSmartRetry(ctx, bot, db, mgr, reg, schema, ncfg, baseURL)
-		} else {
+		} else if cfg.Enabled() {
 			log.Println("report scheduler: sending evening report…")
 			if err := retryEveningSnapshotUnavailable(ctx, next, reportTimezone(ncfg), time.Now, waitForContext, func() error {
 				return notify.SendEvening(bot, db, ncfg)
@@ -1268,12 +1347,7 @@ schedulerLoop:
 const eveningSnapshotRetryInterval = time.Minute
 
 func reportTimezone(cfg notify.Config) *time.Location {
-	if cfg.Timezone != "" {
-		if loc, err := time.LoadLocation(cfg.Timezone); err == nil {
-			return loc
-		}
-	}
-	return time.Local
+	return storage.ResolveReportLocation(cfg.Timezone)
 }
 
 // retryEveningSnapshotUnavailable retries only while a first-start snapshot
@@ -1343,7 +1417,9 @@ func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, 
 	// The independent minute loop owns retries and reminders even after this
 	// scheduled invocation returns or the daily report has already been sent.
 	makeMorningTrigger(ctx, db, mgr.MorningSendMuFor(schema), mgr, reg, schema, mgr.NotifyDefaultsFor(schema))()
-	notify.MaybeFireAll(bot, db, ncfg, baseURL)
+	if bot != nil && ncfg.Enabled() {
+		notify.MaybeFireAll(bot, db, ncfg, baseURL)
+	}
 }
 
 func trySendWakeFeedbackAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, date string, now time.Time, webhookAvailable bool) bool {

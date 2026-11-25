@@ -4,6 +4,7 @@ import { ThemeSwitcher } from "./ThemeSwitcher";
 interface AppHeaderProps {
   locale: Locale;
   isAdmin?: boolean;
+  showInbox?: boolean;
 }
 
 function localizedHref(path: string, locale: Locale): string {
@@ -11,7 +12,7 @@ function localizedHref(path: string, locale: Locale): string {
   return `${path}${separator}lang=${locale}`;
 }
 
-export function AppHeader({ locale, isAdmin = false }: AppHeaderProps) {
+export function AppHeader({ locale, isAdmin = false, showInbox = false }: AppHeaderProps) {
   const params = new URLSearchParams(window.location.search);
   const currentPath = window.location.pathname;
 
@@ -21,6 +22,18 @@ export function AppHeader({ locale, isAdmin = false }: AppHeaderProps) {
         {translate(locale, "appTitle")}
       </a>
       <nav className="app-header__links" aria-label={translate(locale, "primaryNav")}>
+        {showInbox ? (
+          <a
+            href={localizedHref("/inbox", locale)}
+            aria-current={
+              currentPath === "/inbox" || currentPath.startsWith("/inbox/")
+                ? "page"
+                : undefined
+            }
+          >
+            {translate(locale, "inbox")}
+          </a>
+        ) : null}
         <a
           href={localizedHref("/metrics", locale)}
           aria-current={

@@ -237,7 +237,7 @@ func SendMorningSmartOpts(bot *Bot, db *storage.DB, cfg Config, opts MorningSend
 	return sendMorningReport(bot, db, cfg, opts, reportDeliveryDurable)
 }
 
-func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpts, policy reportDeliveryPolicy) (bool, string, error) {
+func prepareMorningReportHistory(db *storage.DB, cfg Config, opts MorningSendOpts) (*storage.ReportHistory, *health.BriefingResponse, map[string]string, health.MorningReportSleep, freshness, string, bool, error) {
 	loc := cfg.location()
 	now := time.Now()
 	today := now.In(loc).Format("2006-01-02")
@@ -246,25 +246,25 @@ func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpt
 	wakeErr := err
 	status, err = resolveMorningWakeStatus(status, err, opts.Force)
 	if err != nil {
-		return false, status.Reason, err
+		return nil, nil, nil, health.MorningReportSleep{}, freshness{}, status.Reason, false, err
 	}
 	if wakeErr != nil {
 		log.Printf("morning report: forced send despite wake detection error: %v", wakeErr)
 	}
 	if !status.Ready && !opts.Force {
-		return false, status.Reason, nil
+		return nil, nil, nil, health.MorningReportSleep{}, freshness{}, status.Reason, false, nil
 	}
 
 	briefing, err := db.GetHealthBriefing(cfg.Lang)
 	if err != nil {
-		return false, status.Reason, err
+		return nil, nil, nil, health.MorningReportSleep{}, freshness{}, status.Reason, false, err
 	}
 	sleep, aiBlocks, evidenceErr := db.MorningReportEvidence(context.Background(), cfg.AIConfig, cfg.Lang, today, briefing)
 	if evidenceErr != nil {
 		log.Printf("morning report: evidence unavailable: %v", evidenceErr)
 	}
 	if opts.RequireAI && cfg.AIConfig.Enabled() && len(aiBlocks) == 0 {
-		return false, "ai_pending", nil
+		return nil, nil, nil, health.MorningReportSleep{}, freshness{}, "ai_pending", false, nil
 	}
 	fresh := computeFreshness(db, time.Now())
 	msg := formatMorning(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, sleep)
@@ -273,9 +273,6 @@ func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpt
 		richMsg = formatMorningRich(briefing, aiBlocks, cfg.Lang, loc, fresh, opts.CheckinExpired, "", sleep)
 	}
 
-	// Forced sends keep the same concise data caveat in the sleep section;
-	// scheduler timing and check-in state do not add another banner.
-	key := "report:morning:" + today
 	decisionID := ""
 	if briefing.DailyDecision != nil {
 		decisionID = briefing.DailyDecision.ID
@@ -320,19 +317,72 @@ func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpt
 		}
 	}
 	scheduled := cfg.NextMorning(time.Date(now.In(loc).Year(), now.In(loc).Month(), now.In(loc).Day(), 0, 0, 0, 0, loc).Add(-time.Nanosecond))
-	history := storage.ReportHistory{ScheduledAt: &scheduled, Kind: "morning", LocalDate: today, Timezone: loc.String(), Language: cfg.Lang, PlainBody: msg, RichBody: richMsg, DecisionID: decisionID, Context: snapshot, AIMetadata: aiSnapshot, FallbackReason: fallbackReason}
-	reserved, err := sendArchivedReport(policy, db, bot, cfg, key, &history)
+	history := &storage.ReportHistory{ScheduledAt: &scheduled, Kind: "morning", LocalDate: today, Timezone: loc.String(), Language: cfg.Lang, PlainBody: msg, RichBody: richMsg, DecisionID: decisionID, Context: snapshot, AIMetadata: aiSnapshot, FallbackReason: fallbackReason}
+	return history, briefing, aiBlocks, sleep, fresh, status.Reason, true, nil
+}
+
+// PublishMorningSmartOpts prepares and atomically commits today's morning
+// report into report_history and inbox_items without requiring Telegram.
+// Returns (history, inboxID, created, reason, err). When today's morning Inbox
+// card already exists, the existing archived report is returned with created=false.
+func PublishMorningSmartOpts(db *storage.DB, cfg Config, opts MorningSendOpts) (*storage.ReportHistory, uuid.UUID, bool, string, error) {
+	history, briefing, aiBlocks, sleep, fresh, reason, ready, err := prepareMorningReportHistory(db, cfg, opts)
+	if err != nil || !ready {
+		return nil, uuid.Nil, false, reason, err
+	}
+	key := "report:morning:" + history.LocalDate
+	history.DeliveryKey = &key
+	ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
+	inboxID, created, err := db.PublishMorningReportToInbox(ctx, history, false)
+	cancel()
+	if err != nil {
+		return nil, uuid.Nil, false, reason, err
+	}
+	if created {
+		sleepView := buildMorningSleepView(briefing, aiBlocks, &sleep, cfg.Lang)
+		evidence := morningEvidenceForReport(briefing, fresh)
+		dateMismatch := evidence.Date != "" && evidence.Date != history.LocalDate
+		sections := morningAIExplanationSections(aiBlocks, cfg.Lang, history.LocalDate, dateMismatch, fresh)
+		log.Printf("morning report: published to inbox id=%s report_id=%s ai_sleep=%v ai_sections=%d", inboxID, history.ID, sleepView.explanationAI, len(sections))
+	}
+	return history, inboxID, created, reason, nil
+}
+
+// DeliverMorningReportToTelegram sends an already-archived morning report to
+// Telegram using its existing report_id and durable delivery key. Retryable
+// failures (`failed`) can be retried on the next tick without regenerating the
+// report or creating a new Inbox card.
+func DeliverMorningReportToTelegram(bot *Bot, db *storage.DB, cfg Config, history *storage.ReportHistory) (bool, error) {
+	if !cfg.Enabled() || bot == nil || history == nil || history.ID == uuid.Nil || history.DeliveryKey == nil || *history.DeliveryKey == "" {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
+	token, reserved, err := db.ReserveReportDeliveryForExisting(ctx, history.ID)
+	cancel()
+	if err != nil || !reserved {
+		return reserved, err
+	}
+	return sendReservedArchivedReport(reportDeliveryDurable, db, bot, cfg, *history.DeliveryKey, history, token)
+}
+
+func sendMorningReport(bot *Bot, db *storage.DB, cfg Config, opts MorningSendOpts, policy reportDeliveryPolicy) (bool, string, error) {
+	history, briefing, aiBlocks, sleep, fresh, reason, ready, err := prepareMorningReportHistory(db, cfg, opts)
+	if err != nil || !ready {
+		return false, reason, err
+	}
+	key := "report:morning:" + history.LocalDate
+	reserved, err := sendArchivedReport(policy, db, bot, cfg, key, history)
 	if reserved && err == nil {
 		sleepView := buildMorningSleepView(briefing, aiBlocks, &sleep, cfg.Lang)
 		evidence := morningEvidenceForReport(briefing, fresh)
-		dateMismatch := evidence.Date != "" && evidence.Date != today
-		sections := morningAIExplanationSections(aiBlocks, cfg.Lang, today, dateMismatch, fresh)
+		dateMismatch := evidence.Date != "" && evidence.Date != history.LocalDate
+		sections := morningAIExplanationSections(aiBlocks, cfg.Lang, history.LocalDate, dateMismatch, fresh)
 		log.Printf("morning report: delivered ai_sleep=%v ai_sections=%d", sleepView.explanationAI, len(sections))
 	}
 	if !reserved && err == nil {
 		return false, "delivery_already_reserved", nil
 	}
-	return reserved, status.Reason, err
+	return reserved, reason, err
 }
 
 func resolveMorningWakeStatus(status storage.MorningWakeStatus, err error, force bool) (storage.MorningWakeStatus, error) {

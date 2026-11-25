@@ -19,6 +19,14 @@ export type SleepDurationBalanceResponse = components["schemas"]["SleepDurationB
 export type SleepGoalRequest = components["schemas"]["SleepGoalRequest"];
 export type SleepGoalResponse = components["schemas"]["SleepGoalResponse"];
 export type SleepGoalValue = NonNullable<SleepGoalResponse["goal"]>;
+export type InboxFeedResponse = components["schemas"]["InboxFeedResponse"];
+export type InboxItemSummary = NonNullable<InboxFeedResponse["items"]>[number];
+export type InboxDetailResponse = components["schemas"]["InboxDetailResponse"];
+export type InboxPendingResponse = components["schemas"]["InboxPendingResponse"];
+export type PendingCheckinPrompt = NonNullable<InboxPendingResponse["prompts"]>[number];
+export type InboxPromptOption = NonNullable<PendingCheckinPrompt["options"]>[number];
+export type PromptAnswerRequest = components["schemas"]["PromptAnswerRequest"];
+export type PromptAnswerResponse = components["schemas"]["PromptAnswerResponse"];
 
 export type SleepDurationComparison = NonNullable<components["schemas"]["SleepDurationComparisonResponse"]["comparison"]>;
 
@@ -257,5 +265,53 @@ export async function putSleepGoal(
   signal?: AbortSignal,
 ): Promise<SleepGoalResponse> {
   const { data, error, response } = await client.PUT("/api/sleep/goal", { body, signal });
+  return requireData(data, error, response);
+}
+
+export async function getInbox(
+  locale: Locale,
+  options: { limit?: number; cursor?: string } = {},
+  signal?: AbortSignal,
+): Promise<InboxFeedResponse> {
+  const { data, error, response } = await client.GET("/api/inbox", {
+    params: { query: { lang: locale, limit: options.limit, cursor: options.cursor } },
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function getPendingInboxPrompts(
+  locale: Locale,
+  signal?: AbortSignal,
+): Promise<InboxPendingResponse> {
+  const { data, error, response } = await client.GET("/api/inbox/pending", {
+    params: { query: { lang: locale } },
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function getInboxItem(
+  id: string,
+  locale: Locale,
+  signal?: AbortSignal,
+): Promise<InboxDetailResponse> {
+  const { data, error, response } = await client.GET("/api/inbox/{id}", {
+    params: { path: { id }, query: { lang: locale } },
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function answerInboxPrompt(
+  promptId: string,
+  body: PromptAnswerRequest,
+  signal?: AbortSignal,
+): Promise<PromptAnswerResponse> {
+  const { data, error, response } = await client.POST("/api/prompts/{prompt_id}/answer", {
+    params: { path: { prompt_id: promptId } },
+    body,
+    signal,
+  });
   return requireData(data, error, response);
 }

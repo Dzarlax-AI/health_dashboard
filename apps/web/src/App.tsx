@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { ClientApiError } from "./api/client";
+import {
+  ClientApiError,
+  getPendingInboxPrompts,
+  type PendingCheckinPrompt,
+} from "./api/client";
 import {
   clearSessionRecoveryAttempt,
   recoverSessionOnUnauthorized,
@@ -21,6 +25,8 @@ import { SleepComparisonCard } from "./features/sleep/SleepComparisonCard";
 import { TodayInsights } from "./features/dashboard/TodayInsights";
 import { resolveHealthSection } from "./features/health-detail/config";
 import { HealthDetailPage } from "./features/health-detail/HealthDetailPage";
+import { InboxPage } from "./features/inbox/InboxPage";
+import { PendingCheckinCard } from "./features/inbox/PendingCheckinCard";
 import { SleepPage } from "./features/sleep/SleepPage";
 import { EnergyPage } from "./features/energy/EnergyPage";
 import { MetricsPage } from "./features/metrics/MetricsPage";
@@ -35,6 +41,10 @@ type AppState =
   | { status: "unauthenticated" }
   | { status: "error"; message: string };
 
+const PENDING_INBOX_REFRESH_MS = 5 * 60 * 1000;
+const PENDING_INBOX_RETRY_BASE_MS = 30 * 1000;
+const PENDING_INBOX_MAX_RETRIES = 3;
+
 function fixtureHref(locale: Locale, fixture: string): string {
   return `/?${new URLSearchParams({ lang: locale, fixture }).toString()}`;
 }
@@ -46,6 +56,11 @@ function DashboardApp() {
   const fixture = fixtureEnabled ? resolveFixture(params.get("fixture")) : undefined;
   const [reloadKey, setReloadKey] = useState(0);
   const [liveState, setLiveState] = useState<AppState>({ status: "loading" });
+  const [pendingPrompts, setPendingPrompts] = useState<PendingCheckinPrompt[]>([]);
+  const [inboxSupported, setInboxSupported] = useState(false);
+  const [pendingReloadKey, setPendingReloadKey] = useState(0);
+  const inboxDisabledRef = useRef(false);
+  const pendingRetryAttemptsRef = useRef(0);
   const aiPollAttempts = useRef(0);
   const fixtureState: AppState | undefined = fixture
     ? fixture === "loading"
@@ -94,6 +109,88 @@ function DashboardApp() {
       });
     return () => controller.abort();
   }, [fixture, locale, reloadKey]);
+
+  useEffect(() => {
+    if (fixture || inboxDisabledRef.current) {
+      return;
+    }
+    const controller = new AbortController();
+    let retryTimer: number | undefined;
+    getPendingInboxPrompts(locale, controller.signal)
+      .then((res) => {
+        pendingRetryAttemptsRef.current = 0;
+        setInboxSupported(true);
+        setPendingPrompts(res.prompts ?? []);
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        if (error instanceof ClientApiError && error.status === 404) {
+          inboxDisabledRef.current = true;
+          setInboxSupported(false);
+          setPendingPrompts([]);
+          return;
+        }
+        if (error instanceof ClientApiError && error.status === 401) {
+          return;
+        }
+        if (
+          document.visibilityState === "visible" &&
+          pendingRetryAttemptsRef.current < PENDING_INBOX_MAX_RETRIES
+        ) {
+          pendingRetryAttemptsRef.current += 1;
+          retryTimer = window.setTimeout(
+            () => setPendingReloadKey((value) => value + 1),
+            PENDING_INBOX_RETRY_BASE_MS * pendingRetryAttemptsRef.current,
+          );
+        }
+      });
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) {
+        window.clearTimeout(retryTimer);
+      }
+    };
+  }, [fixture, locale, reloadKey, pendingReloadKey]);
+
+  useEffect(() => {
+    if (fixture) {
+      return;
+    }
+    let intervalId: number | undefined;
+    const stopInterval = () => {
+      if (intervalId !== undefined) {
+        window.clearInterval(intervalId);
+        intervalId = undefined;
+      }
+    };
+    const startInterval = () => {
+      stopInterval();
+      if (document.visibilityState === "visible" && !inboxDisabledRef.current) {
+        intervalId = window.setInterval(() => {
+          if (inboxDisabledRef.current) {
+            stopInterval();
+            return;
+          }
+          setPendingReloadKey((value) => value + 1);
+        }, PENDING_INBOX_REFRESH_MS);
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && !inboxDisabledRef.current) {
+        pendingRetryAttemptsRef.current = 0;
+        setPendingReloadKey((value) => value + 1);
+      }
+      startInterval();
+    };
+    startInterval();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      stopInterval();
+    };
+  }, [fixture]);
 
   useEffect(() => {
     const currentTodayInsights =
@@ -147,6 +244,7 @@ function DashboardApp() {
       <AppHeader
         locale={locale}
         isAdmin={state.status === "ready" && state.resources.session?.is_admin}
+        showInbox={inboxSupported}
       />
       <main className="page">
         {fixtureEnabled ? (
@@ -204,6 +302,19 @@ function DashboardApp() {
           </div>
         ) : model ? (
           <>
+            {inboxSupported && pendingPrompts.length > 0 ? (
+              <PendingCheckinCard
+                locale={locale}
+                prompts={pendingPrompts}
+                onAnswered={() => {
+                  setPendingReloadKey((k) => k + 1);
+                  setReloadKey((k) => k + 1);
+                }}
+                onExpired={() => {
+                  setPendingReloadKey((k) => k + 1);
+                }}
+              />
+            ) : null}
             <DashboardHero locale={locale} model={model} />
             <TodayInsights locale={locale} todayInsights={model.todayInsights} />
             {model.energy || model.sleep ? (
@@ -260,8 +371,21 @@ function resolveMetricName(pathname: string): string | undefined {
   }
 }
 
+function resolveInboxItemId(pathname: string): string | undefined {
+  const match = /^\/inbox\/([^/]+)$/.exec(pathname);
+  if (!match) return undefined;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
 export function App() {
   const { pathname } = window.location;
+  if (pathname === "/inbox") return <InboxPage />;
+  const inboxItemId = resolveInboxItemId(pathname);
+  if (inboxItemId) return <InboxPage itemId={inboxItemId} />;
   if (pathname === "/sleep") return <SleepPage />;
   if (pathname === "/energy") return <EnergyPage />;
   if (pathname === "/metrics") return <MetricsPage />;

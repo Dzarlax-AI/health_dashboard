@@ -458,7 +458,7 @@ func (s *DB) EvaluateLowSleepPromptUsefulness(signalDate string, candidate LowSl
 	// date. The subjective morning check-in for that same local date is
 	// the user-provided context for the analyzed sleep; do not look at
 	// promptLocalDate here.
-	if row, err := s.GetTodayCheckin(signalDate, CheckinSourceTelegram); err == nil && row != nil {
+	if row, err := s.GetCanonicalTodayCheckin(signalDate); err == nil && row != nil {
 		checkinAnswer = row.Answer
 		subjective = &health.SubjectiveCheckinSummary{Status: row.Status, Answer: row.Answer}
 	} else if err != nil {

@@ -767,6 +767,9 @@
                   "format": "date-time",
                   "type": "string"
                 },
+                "answered_channel": {
+                  "type": "string"
+                },
                 "date": {
                   "type": "string"
                 },
@@ -812,6 +815,9 @@
                 },
                 "answered_at": {
                   "format": "date-time",
+                  "type": "string"
+                },
+                "answered_channel": {
                   "type": "string"
                 },
                 "date": {
@@ -2846,6 +2852,267 @@
         ],
         "type": "object"
       },
+      "InboxDetailResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "answered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "answered_channel": {
+            "enum": [
+              "ios_app",
+              "web",
+              "telegram"
+            ],
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "morning_report",
+              "prompt_checkin"
+            ],
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "local_date": {
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "label"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "prepared_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "prompt_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "read_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "report_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "timing": {
+            "enum": [
+              "on_time",
+              "late"
+            ],
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "local_date",
+          "created_at",
+          "title"
+        ],
+        "type": "object"
+      },
+      "InboxFeedResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "answer": {
+                  "type": "string"
+                },
+                "answered_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "answered_channel": {
+                  "enum": [
+                    "ios_app",
+                    "web",
+                    "telegram"
+                  ],
+                  "type": "string"
+                },
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "expires_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "morning_report",
+                    "prompt_checkin"
+                  ],
+                  "type": "string"
+                },
+                "local_date": {
+                  "type": "string"
+                },
+                "preview": {
+                  "type": "string"
+                },
+                "prompt_id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "read_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "report_id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "timing": {
+                  "enum": [
+                    "on_time",
+                    "late"
+                  ],
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "local_date",
+                "created_at",
+                "title"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "InboxPendingResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "prompts": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "expires_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "local_date": {
+                  "type": "string"
+                },
+                "options": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "prompt_id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "prompt_id",
+                "local_date",
+                "expires_at",
+                "title",
+                "options"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "prompts"
+        ],
+        "type": "object"
+      },
       "LatestMetricsResponse": {
         "items": {
           "additionalProperties": false,
@@ -3641,6 +3908,86 @@
           "days",
           "tenants",
           "rows"
+        ],
+        "type": "object"
+      },
+      "PromptAnswerRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "enum": [
+              "great",
+              "ok",
+              "meh",
+              "sick"
+            ],
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "ios_app",
+              "web"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer",
+          "channel"
+        ],
+        "type": "object"
+      },
+      "PromptAnswerResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "enum": [
+              "great",
+              "ok",
+              "meh",
+              "sick"
+            ],
+            "type": "string"
+          },
+          "answered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "saved",
+              "already_answered"
+            ],
+            "type": "string"
+          },
+          "timing": {
+            "enum": [
+              "on_time",
+              "late"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "answer",
+          "answered_at",
+          "timing"
+        ],
+        "type": "object"
+      },
+      "PromptExpiredResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "expired"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
         ],
         "type": "object"
       },
@@ -9657,6 +10004,257 @@
         "summary": "Start a streamed Apple Health import"
       }
     },
+    "/api/inbox": {
+      "get": {
+        "operationId": "listInbox",
+        "parameters": [
+          {
+            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "in": "query",
+            "name": "lang",
+            "required": false,
+            "schema": {
+              "default": "en",
+              "enum": [
+                "en",
+                "ru",
+                "sr"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque continuation cursor ordered by (created_at, id).",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxFeedResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "In-app Inbox is disabled for this profile."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Chronological feed of morning reports and morning check-in prompts"
+      }
+    },
+    "/api/inbox/pending": {
+      "get": {
+        "operationId": "listPendingInboxPrompts",
+        "parameters": [
+          {
+            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "in": "query",
+            "name": "lang",
+            "required": false,
+            "schema": {
+              "default": "en",
+              "enum": [
+                "en",
+                "ru",
+                "sr"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxPendingResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "In-app Inbox is disabled for this profile."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Active unanswered morning check-in prompts for today"
+      }
+    },
+    "/api/inbox/{id}": {
+      "get": {
+        "operationId": "getInboxItem",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unsupported values are ignored and the server falls back to the documented default.",
+            "in": "query",
+            "name": "lang",
+            "required": false,
+            "schema": {
+              "default": "en",
+              "enum": [
+                "en",
+                "ru",
+                "sr"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxDetailResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "In-app Inbox is disabled for this profile, or the requested item was not found."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Inbox item detail with normalized report text or canonical check-in state"
+      }
+    },
     "/api/metrics": {
       "get": {
         "operationId": "listMetrics",
@@ -10238,6 +10836,122 @@
           }
         },
         "summary": "Earliest and latest dates for a metric"
+      }
+    },
+    "/api/prompts/{prompt_id}/answer": {
+      "post": {
+        "operationId": "answerInboxPrompt",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prompt_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromptAnswerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptAnswerResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid JSON, answer choice, or client channel."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Unknown prompt or prompt belongs to another tenant."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptExpiredResponse"
+                }
+              }
+            },
+            "description": "Prompt local date does not match tenant-local today; row left unchanged."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The backend could not save the prompt answer."
+          }
+        },
+        "summary": "Submit a canonical answer for an active morning check-in prompt"
       }
     },
     "/api/readiness-history": {

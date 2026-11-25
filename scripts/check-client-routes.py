@@ -99,6 +99,10 @@ def consumer_paths(sources):
                         path += "{key}"
                     elif path == "/api/admin/users/" and "encodeURIComponent(username)" in line:
                         path += "{username}/api-key"
+                    elif path == "/api/inbox/" and ('\\(' in line or '${' in line):
+                        path += "{id}"
+                    elif path == "/api/prompts/" and ('\\(' in line or '${' in line) and "/answer" in line:
+                        path += "{prompt_id}/answer"
                 if path.endswith("/admin-readiness-onboarding/") and "+ step" in line:
                     found.update(path + step for step in re.findall(r"onboardingRefreshStep\('(step-[0-9-]+(?:plan)?)'\)", source))
                     continue

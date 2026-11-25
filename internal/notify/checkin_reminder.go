@@ -32,7 +32,14 @@ func SendCheckinReminderOnce(bot CheckinBot, store CheckinReminderStore, lang, d
 	if bot == nil || store == nil || date == "" {
 		return false, errors.New("check-in reminder requires bot, store, and date")
 	}
-	row, err := store.GetTodayCheckin(date, storage.CheckinSourceTelegram)
+	var row *storage.CheckinRow
+	if canonical, ok := store.(interface {
+		GetCanonicalTodayCheckin(date string) (*storage.CheckinRow, error)
+	}); ok {
+		row, err = canonical.GetCanonicalTodayCheckin(date)
+	} else {
+		row, err = store.GetTodayCheckin(date, storage.CheckinSourceTelegram)
+	}
 	if err != nil {
 		return false, err
 	}
