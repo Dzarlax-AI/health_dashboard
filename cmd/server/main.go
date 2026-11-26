@@ -437,14 +437,23 @@ func shouldSeedBootstrapAdmin(registryEmpty, cloudflareAccess, hasAPIKey, hasPas
 }
 
 // runSingleTenant runs the server in legacy single-user mode.
+// Keep missing credentials represented as a nil transport at the lifecycle boundary.
+func configuredAPNSTransport(sender *apnspush.Sender) apnspush.TransportSender {
+	if sender == nil {
+		return nil
+	}
+	return sender
+}
+
 func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth bool, trustedFwdAuthNets []*net.IPNet, apiKey string,
 	mgr *tenants.Manager, reg *registry.Registry, mcpOAuth *oauth.Config,
 	accessConfig *mcpserver.AccessConfig, accessVerifier mcpserver.AccessAssertionVerifier,
 	db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, hrZones health.HRZones, apnsSender *apnspush.Sender) {
 
+	apnsTransport := configuredAPNSTransport(apnsSender)
 	var morningSendMu, checkinSendMu sync.Mutex
-	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults, apnsSender)
+	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults, apnsTransport)
 	energyV2 := storage.NewEnergyV2Orchestrator()
 	todayDerived := storage.NewTodayDerivedStateCoordinator(energyV2)
 	refreshDatesFn := makeTodayDerivedStateRefresh(ctx, db, schema, notifyDefaults, todayDerived, func() storage.AIConfig {
@@ -473,8 +482,8 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 
 	go runReportScheduler(ctx, db, mgr, reg, schema, notifyDefaults, baseURL, func() {
 		backfillDatesFn([]string{db.Today()})
-	}, apnsSender)
-	go runMorningLifecycle(ctx, db, mgr, reg, schema, notifyDefaults, apnsSender)
+	}, apnsTransport)
+	go runMorningLifecycle(ctx, db, mgr, reg, schema, notifyDefaults, apnsTransport)
 	go runAIInsightLifecycle(ctx, db, mgr, schema, notifyDefaults)
 	go runDaytimeLifecycle(ctx, db, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
@@ -607,8 +616,9 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 
 	enqueueStartupCacheRefresh(startupBackfills, db, schema, notifyDefaults, refreshDatesFn, todayDerived)
 
+	apnsTransport := configuredAPNSTransport(apnsSender)
 	var morningSendMu, checkinSendMu sync.Mutex
-	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults, apnsSender)
+	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults, apnsTransport)
 
 	backfillFn := makeBackfillFn(db, backfillDatesFn)
 	testNotifyFn := makeTestNotifyFn(db, mgr, schema, notifyDefaults)
@@ -627,8 +637,8 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 
 	go runReportScheduler(ctx, db, mgr, reg, schema, notifyDefaults, baseURL, func() {
 		backfillDatesFn([]string{db.Today()})
-	}, apnsSender)
-	go runMorningLifecycle(ctx, db, mgr, reg, schema, notifyDefaults, apnsSender)
+	}, apnsTransport)
+	go runMorningLifecycle(ctx, db, mgr, reg, schema, notifyDefaults, apnsTransport)
 	go runAIInsightLifecycle(ctx, db, mgr, schema, notifyDefaults)
 	go runDaytimeLifecycle(ctx, db, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestPushDevicesUpsertBindingRotationAndAtomicTokenUniqueness(t *testing.T) {
@@ -348,5 +349,133 @@ func TestInboxCheckinIOSPushChannelAndCrossChannelRepeat(t *testing.T) {
 	cov, err := db.GetCheckinCoverage(today, "all", 7)
 	if err != nil || len(cov.Rows) != 1 || cov.Rows[0].AnsweredChannel != CheckinChannelIOSPush {
 		t.Fatalf("coverage = %+v err=%v", cov, err)
+	}
+}
+
+func TestPushGateFailsClosedOnReadError(t *testing.T) {
+	t.Setenv("APNS_PUSH_ENABLED", "true")
+	db, cleanup := setupInboxTestDB(t, "push_gate")
+	defer cleanup()
+	if !IsAPNSPushEnabled(db) {
+		t.Fatal("absent tenant flag should use the process default")
+	}
+	if err := db.SaveSettings(map[string]string{SettingAPNSPushEnabled: "false"}); err != nil {
+		t.Fatal(err)
+	}
+	if IsAPNSPushEnabled(db) {
+		t.Fatal("explicit opt-out must override the process default")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if apnsPushEnabled(ctx, db) {
+		t.Fatal("query failure must fail closed even with an enabled process default")
+	}
+}
+
+func TestMorningReportRevisionDoesNotEnqueuePush(t *testing.T) {
+	t.Setenv("APNS_PUSH_ENABLED", "")
+	db, cleanup := setupInboxTestDB(t, "push_revision")
+	defer cleanup()
+	ctx := context.Background()
+	if err := db.EnsurePushTablesContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertPushDevice(ctx, UpsertPushDeviceInput{
+		DeviceID: uuid.New(), APNsToken: strings.Repeat("a", 64), APNsEnv: PushEnvProduction,
+		BundleID: "com.dzarlax.health-sync", Locale: "en",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	date := "2026-11-26"
+	key := "report:morning:" + date
+	first := ReportHistory{DeliveryKey: &key, LocalDate: date, Kind: "morning", Timezone: "UTC", Language: "en", PlainBody: "first"}
+	inboxID, _, err := db.PublishMorningReportToInbox(ctx, &first, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveSettings(map[string]string{SettingAPNSPushEnabled: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	revision := ReportHistory{DeliveryKey: &key, LocalDate: date, Kind: "morning", Timezone: "UTC", Language: "en", PlainBody: "revision"}
+	if id, created, err := db.PublishMorningReportToInbox(ctx, &revision, true); err != nil || !created || id != inboxID {
+		t.Fatalf("revision should be published to the same card: id=%s created=%v err=%v", id, created, err)
+	}
+	var count int
+	if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM push_deliveries`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("revision enqueued %d retroactive deliveries: %v", count, err)
+	}
+}
+
+func TestPushAttemptRechecksClaimedCheckinAndRenewsLease(t *testing.T) {
+	t.Setenv("APNS_PUSH_ENABLED", "true")
+	db, cleanup := setupInboxTestDB(t, "push_stale_claim")
+	defer cleanup()
+	ctx := context.Background()
+	if err := db.EnsurePushTablesContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertPushDevice(ctx, UpsertPushDeviceInput{
+		DeviceID: uuid.New(), APNsToken: strings.Repeat("b", 64), APNsEnv: PushEnvProduction,
+		BundleID: "com.dzarlax.health-sync", Locale: "en",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for _, day := range []string{"2026-11-25", "2026-11-26"} {
+		promptID, _, _, err := db.EnsureCanonicalCheckinPrompt(ctx, day, now, now.Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		claim, err := db.ClaimNextPushDelivery(ctx)
+		if err != nil || claim == nil {
+			t.Fatalf("claim: %v, %v", claim, err)
+		}
+		if day == "2026-11-25" {
+			if _, err := db.AnswerCheckinByPromptID(ctx, promptID, day, CheckinChannelWeb, CheckinAnswerGreat, now); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.StartPushDeliveryAttempt(ctx, claim.ID, claim.LeaseToken); !errors.Is(err, ErrPushDeliveryIneligible) {
+				t.Fatalf("answered after claim: %v", err)
+			}
+			continue
+		}
+		if _, err := db.pool.Exec(ctx, `UPDATE push_deliveries SET lease_until = clock_timestamp() + interval '10 seconds' WHERE id=$1`, claim.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.StartPushDeliveryAttempt(ctx, claim.ID, claim.LeaseToken); err != nil {
+			t.Fatal(err)
+		}
+		var sufficient bool
+		if err := db.pool.QueryRow(ctx, `SELECT lease_until > clock_timestamp() + interval '30 seconds' FROM push_deliveries WHERE id=$1`, claim.ID).Scan(&sufficient); err != nil || !sufficient {
+			t.Fatalf("attempt needs a refreshed lease: %v, %v", sufficient, err)
+		}
+	}
+}
+
+func TestPushPublicationWorksWithSinglePoolConnection(t *testing.T) {
+	t.Setenv("APNS_PUSH_ENABLED", "true")
+	db, cleanup := setupInboxTestDB(t, "push_single_connection")
+	defer cleanup()
+	config := db.pool.(*pgxpool.Pool).Config()
+	config.MaxConns = 1
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	single := NewFromPool(pool)
+	defer single.Close()
+
+	date := "2026-11-26"
+	key := "report:morning:" + date
+	if _, _, err := single.PublishMorningReportToInbox(ctx, &ReportHistory{
+		DeliveryKey: &key, LocalDate: date, Kind: "morning", Timezone: "UTC", Language: "en", PlainBody: "report",
+	}, false); err != nil {
+		t.Fatalf("publish report on a single connection: %v", err)
+	}
+	now := time.Now()
+	if _, _, _, err := single.EnsureCanonicalCheckinPrompt(ctx, date, now, now.Add(time.Hour)); err != nil {
+		t.Fatalf("publish check-in on a single connection: %v", err)
 	}
 }

@@ -71,8 +71,8 @@ func BuildCheckinPayload(locale string, promptID, bindingID uuid.UUID) ([]byte, 
 	return json.Marshal(map[string]any{
 		"aps": map[string]any{
 			"alert": map[string]string{
-				"title":    title,
-				"body":     body,
+				"title": title,
+				"body":  body,
 			},
 			"sound":    "default",
 			"category": CategoryCheckinMorning,
@@ -103,6 +103,10 @@ func ProcessTenantDeliveries(ctx context.Context, db *storage.DB, sender Transpo
 	for i := 0; i < limit; i++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		// An opt-out may have occurred while the preceding transport call was in flight.
+		if i > 0 && (!storage.IsInAppInboxEnabled(db) || !storage.IsAPNSPushEnabled(db)) {
+			return nil
 		}
 		d, err := db.ClaimNextPushDelivery(ctx)
 		if err != nil {
@@ -180,7 +184,14 @@ func deliverClaimed(ctx context.Context, db *storage.DB, sender TransportSender,
 	// Record durable attempt strictly under active unexpired lease_token BEFORE calling APNs.
 	attemptID, err := db.StartPushDeliveryAttempt(ctx, d.ID, d.LeaseToken)
 	if err != nil {
-		if !errors.Is(err, storage.ErrPushLeaseLost) {
+		if errors.Is(err, storage.ErrPushDeliveryIneligible) {
+			if _, finishErr := completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
+				DeliveryID: d.ID, LeaseToken: d.LeaseToken, DeliveryState: storage.PushDeliveryStateExpired,
+				Reason: "no_longer_eligible",
+			}); finishErr != nil {
+				log.Printf("apns: complete ineligible delivery=%s: %v", d.ID, finishErr)
+			}
+		} else if !errors.Is(err, storage.ErrPushLeaseLost) {
 			log.Printf("apns: start attempt delivery=%s: %v", d.ID, err)
 		}
 		return

@@ -162,6 +162,7 @@ func (s *DB) PublishMorningReportToInbox(ctx context.Context, h *ReportHistory, 
 	if h == nil || h.IsPreview || h.Kind != "morning" || h.LocalDate == "" || h.DeliveryKey == nil || *h.DeliveryKey == "" {
 		return uuid.Nil, false, errors.New("invalid morning inbox report")
 	}
+	pushEnabled := apnsPushEnabled(ctx, s)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return uuid.Nil, false, err
@@ -224,7 +225,7 @@ func (s *DB) PublishMorningReportToInbox(ctx context.Context, h *ReportHistory, 
 			return uuid.Nil, false, err
 		}
 	}
-	if IsAPNSPushEnabled(s) {
+	if existingInboxID == uuid.Nil && pushEnabled {
 		if err = enqueuePushDeliveriesTx(ctx, tx, inboxID, InboxKindMorningReport, h.PreparedAt.Add(morningReportPushTTL)); err != nil {
 			return uuid.Nil, false, err
 		}
@@ -339,6 +340,7 @@ func (s *DB) EnsureCanonicalCheckinPrompt(ctx context.Context, date string, prom
 	if _, err := time.Parse("2006-01-02", date); err != nil {
 		return uuid.Nil, CheckinRow{}, false, fmt.Errorf("date must be YYYY-MM-DD: %w", err)
 	}
+	pushEnabled := apnsPushEnabled(ctx, s)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return uuid.Nil, CheckinRow{}, false, err
@@ -387,7 +389,7 @@ func (s *DB) EnsureCanonicalCheckinPrompt(ctx context.Context, date string, prom
 	} else if err != nil {
 		return uuid.Nil, CheckinRow{}, false, err
 	}
-	if created && IsAPNSPushEnabled(s) {
+	if created && pushEnabled {
 		if err = enqueuePushDeliveriesTx(ctx, tx, promptID, InboxKindPromptCheckin, expiresAt); err != nil {
 			return uuid.Nil, CheckinRow{}, false, err
 		}

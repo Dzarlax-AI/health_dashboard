@@ -211,6 +211,17 @@ func TestEnablingInboxAndAPNsAfterSettledMorningReportDoesNotResendOrEnqueuePush
 		t.Fatalf("MarkMorningReportSent: %v", err)
 	}
 
+	// The independent check-in lane may legitimately create a new event during
+	// daytime. Seed an answered check-in so this test only measures report replay.
+	now := time.Now()
+	promptID, _, _, err := db.EnsureCanonicalCheckinPrompt(ctx, today, now, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AnswerCheckinByPromptID(ctx, promptID, today, storage.CheckinChannelWeb, storage.CheckinAnswerGreat, now); err != nil {
+		t.Fatal(err)
+	}
+
 	// Later in the day, register an active push device and enable both Inbox + APNs.
 	if _, err := db.UpsertPushDevice(ctx, storage.UpsertPushDeviceInput{
 		DeviceID:  [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
@@ -255,5 +266,16 @@ func TestEnablingInboxAndAPNsAfterSettledMorningReportDoesNotResendOrEnqueuePush
 	}
 	if apnsMock.calls.Load() != 0 {
 		t.Fatalf("retroactive APNs sends = %d, want 0", apnsMock.calls.Load())
+	}
+}
+
+func TestConfiguredAPNSTransportPreservesMissingSender(t *testing.T) {
+	var sender *apnspush.Sender
+	if configuredAPNSTransport(sender) != nil {
+		t.Fatal("missing credentials must produce a nil transport interface")
+	}
+	sender = &apnspush.Sender{}
+	if configuredAPNSTransport(sender) != sender {
+		t.Fatal("configured transport must preserve the sender")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,9 @@ const (
 // ErrPushLeaseLost indicates that a delivery lease expired or was reclaimed
 // before an attempt could start or complete.
 var ErrPushLeaseLost = errors.New("push delivery lease is no longer active")
+
+// ErrPushDeliveryIneligible means the device or the event changed after claim.
+var ErrPushDeliveryIneligible = errors.New("push delivery is no longer eligible")
 
 const pushTablesDDL = `
 CREATE TABLE IF NOT EXISTS push_devices (
@@ -122,14 +126,28 @@ func (s *DB) EnsurePushTablesContext(ctx context.Context) error {
 // IsAPNSPushEnabled reports whether Direct APNs push enqueueing and delivery
 // are enabled for this tenant. Defaults to false for phased per-profile rollout.
 func IsAPNSPushEnabled(s *DB) bool {
-	defaultEnabled := false
-	if raw := strings.ToLower(strings.TrimSpace(os.Getenv("APNS_PUSH_ENABLED"))); raw != "" {
-		defaultEnabled = raw == "true" || raw == "1" || raw == "on" || raw == "yes"
-	}
+	ctx, cancel := queryCtx()
+	defer cancel()
+	return apnsPushEnabled(ctx, s)
+}
+
+func apnsPushEnabled(ctx context.Context, s *DB) bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("APNS_PUSH_ENABLED")))
+	defaultEnabled := raw == "true" || raw == "1" || raw == "on" || raw == "yes"
 	if s == nil {
 		return defaultEnabled
 	}
-	return getSettingBool(s, SettingAPNSPushEnabled, defaultEnabled)
+
+	var setting string
+	err := s.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, SettingAPNSPushEnabled).Scan(&setting)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return defaultEnabled
+	}
+	if err != nil {
+		return false
+	}
+	enabled, err := strconv.ParseBool(setting)
+	return err == nil && enabled
 }
 
 func ValidAPNsToken(token string) bool {
@@ -646,22 +664,40 @@ func (s *DB) StartPushDeliveryAttempt(ctx context.Context, deliveryID, leaseToke
 	}
 	defer tx.Rollback(ctx)
 
-	var ok bool
+	var eligible bool
 	err = tx.QueryRow(ctx, `
-		SELECT TRUE
-		  FROM push_deliveries
-		 WHERE id = $1
-		   AND state = 'sending'
-		   AND lease_token = $2
-		   AND lease_until > clock_timestamp()
-		   FOR UPDATE`,
+		UPDATE push_deliveries p
+		   SET lease_until = clock_timestamp() + INTERVAL '45 seconds'
+		 WHERE p.id = $1
+		   AND p.state = 'sending'
+		   AND p.lease_token = $2
+		   AND p.lease_until > clock_timestamp()
+		 RETURNING p.expires_at > clock_timestamp()
+		   AND EXISTS (
+		         SELECT 1 FROM push_devices d
+		          WHERE d.device_id = p.device_id
+		            AND d.enabled AND d.invalidated_at IS NULL
+		            AND d.binding_id = p.binding_id
+		            AND d.registration_version = p.registration_version
+		            AND d.token_hash = p.token_hash
+		            AND d.apns_env = p.apns_env
+		       )
+		   AND (p.kind <> 'prompt_checkin' OR EXISTS (
+		         SELECT 1 FROM inbox_items i
+		         JOIN subjective_checkins c ON c.date = i.checkin_date AND c.source = i.checkin_source
+		          WHERE i.id = p.inbox_item_id AND c.status = 'prompted'
+		            AND c.expires_at > clock_timestamp()
+		       ))`,
 		deliveryID, leaseToken,
-	).Scan(&ok)
+	).Scan(&eligible)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return uuid.Nil, ErrPushLeaseLost
 	}
 	if err != nil {
 		return uuid.Nil, err
+	}
+	if !eligible {
+		return uuid.Nil, ErrPushDeliveryIneligible
 	}
 
 	attemptID := uuid.New()
