@@ -37,6 +37,7 @@ const (
 	ContextPromptCategorySkip      = "skip_context"
 
 	ContextPromptSourceTelegram = "telegram"
+	ContextPromptSourceInbox    = "inbox"
 )
 
 var DefaultContextPromptCategories = []string{
@@ -198,10 +199,79 @@ func (s *DB) PruneContextPromptInteractions(now time.Time) (int64, error) {
 	cutoff := now.AddDate(0, 0, -s.ContextPromptRetentionDays())
 	ctx, cancel := queryCtx()
 	defer cancel()
-	tag, err := s.pool.Exec(ctx, `
-		DELETE FROM context_prompt_interactions
-		 WHERE created_at < $1`, cutoff)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	var expiredIDs []string
+	rows, err := tx.Query(ctx, `
+		SELECT prompt_id
+		  FROM context_prompt_interactions
+		 WHERE created_at < $1
+		 FOR UPDATE`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		expiredIDs = append(expiredIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(expiredIDs) == 0 {
+		return 0, tx.Commit(ctx)
+	}
+
+	// Clean dependent push deliveries and inbox cards in FK order when those
+	// tables exist in this tenant schema so retention pruning never fails on FK.
+	var hasInbox bool
+	if err := tx.QueryRow(ctx, `SELECT to_regclass(current_schema() || '.inbox_items') IS NOT NULL`).Scan(&hasInbox); err != nil {
+		return 0, err
+	}
+	if hasInbox {
+		var hasPush bool
+		if err := tx.QueryRow(ctx, `SELECT to_regclass(current_schema() || '.push_deliveries') IS NOT NULL`).Scan(&hasPush); err != nil {
+			return 0, err
+		}
+		if hasPush {
+			if _, err := tx.Exec(ctx, `
+				DELETE FROM push_delivery_attempts a
+				 USING push_deliveries d, inbox_items i
+				 WHERE a.delivery_id = d.id
+				   AND d.inbox_item_id = i.id
+				   AND i.context_prompt_id = ANY($1::text[])`, expiredIDs); err != nil {
+				return 0, err
+			}
+			if _, err := tx.Exec(ctx, `
+				DELETE FROM push_deliveries d
+				 USING inbox_items i
+				 WHERE d.inbox_item_id = i.id
+				   AND i.context_prompt_id = ANY($1::text[])`, expiredIDs); err != nil {
+				return 0, err
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM inbox_items
+			 WHERE context_prompt_id = ANY($1::text[])`, expiredIDs); err != nil {
+			return 0, err
+		}
+	}
+
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM context_prompt_interactions
+		 WHERE prompt_id = ANY($1::text[])`, expiredIDs)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
@@ -680,57 +750,17 @@ func (s *DB) SaveContextPromptAnswer(promptID, category, source string, answered
 	}
 	ctx, cancel := queryCtx()
 	defer cancel()
-	tx, err := s.pool.Begin(ctx)
+	res, err := s.AnswerContextPromptByPromptID(ctx, promptID, source, category, answeredAt)
+	if errors.Is(err, ErrContextPromptExpired) && res != nil {
+		return res.EffectiveStatus, nil
+	}
+	if errors.Is(err, ErrCheckinPromptNotFound) {
+		return "", pgx.ErrNoRows
+	}
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback(ctx)
-
-	var status string
-	var expiresAt time.Time
-	var allowedRaw []byte
-	if err := tx.QueryRow(ctx, `
-		SELECT status, expires_at, allowed_categories
-		  FROM context_prompt_interactions
-		 WHERE prompt_id = $1
-		 FOR UPDATE`, promptID).Scan(&status, &expiresAt, &allowedRaw); err != nil {
-		return "", err
-	}
-	if status == ContextPromptStatusAnswered || status == ContextPromptStatusSkipped || status == ContextPromptStatusExpired {
-		return status, tx.Commit(ctx)
-	}
-	if !contextPromptCanAcceptAnswer(status) {
-		return status, tx.Commit(ctx)
-	}
-	if !answeredAt.Before(expiresAt) {
-		if _, err := tx.Exec(ctx, `
-			UPDATE context_prompt_interactions
-			   SET status = $2, updated_at = $3
-			 WHERE prompt_id = $1`,
-			promptID, ContextPromptStatusExpired, answeredAt); err != nil {
-			return "", err
-		}
-		return ContextPromptStatusExpired, tx.Commit(ctx)
-	}
-	var allowed []string
-	if err := json.Unmarshal(allowedRaw, &allowed); err != nil {
-		return "", err
-	}
-	if !stringInSlice(category, allowed) {
-		return "", fmt.Errorf("category %q not allowed for prompt %s", category, promptID)
-	}
-	nextStatus := ContextPromptStatusAnswered
-	if category == ContextPromptCategoryUnknown || category == ContextPromptCategorySkip {
-		nextStatus = ContextPromptStatusSkipped
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE context_prompt_interactions
-		   SET status = $2, category = $3, source = $4, answered_at = $5, updated_at = $5
-		 WHERE prompt_id = $1`,
-		promptID, nextStatus, category, source, answeredAt); err != nil {
-		return "", err
-	}
-	return nextStatus, tx.Commit(ctx)
+	return res.EffectiveStatus, nil
 }
 
 func contextPromptCanAcceptAnswer(status string) bool {

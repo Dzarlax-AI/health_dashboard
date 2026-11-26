@@ -14,7 +14,10 @@ import (
 	"health-receiver/internal/storage"
 )
 
-const CategoryCheckinMorning = "CHECKIN_MORNING"
+const (
+	CategoryCheckinMorning = "CHECKIN_MORNING"
+	CategoryPromptOpen     = "PROMPT_OPEN"
+)
 
 var (
 	min5xxBackoff = 15 * time.Minute
@@ -84,6 +87,107 @@ func BuildCheckinPayload(locale string, promptID, bindingID uuid.UUID) ([]byte, 
 	})
 }
 
+// BuildPayloadForKind constructs a strictly neutral APNs alert payload (no PII,
+// no health metrics, no scores, no local dates, and no static aps.badge so
+// delayed deliveries never revert the client's live unread badge count).
+func BuildPayloadForKind(kind, locale string, inboxItemID, bindingID uuid.UUID) ([]byte, error) {
+	switch kind {
+	case storage.InboxKindMorningReport:
+		return BuildMorningReportPayload(locale, inboxItemID, bindingID)
+	case storage.InboxKindPromptCheckin:
+		return BuildCheckinPayload(locale, inboxItemID, bindingID)
+	case storage.InboxKindEveningReport:
+		title, body := "Evening Report", "Your evening report is ready."
+		switch locale {
+		case "ru":
+			title, body = "Вечерний отчёт", "Вечерний отчёт готов."
+		case "sr":
+			title, body = "Večernji izveštaj", "Večernji izveštaj je spreman."
+		}
+		return buildNeutralInboxPayload(kind, title, body, "", inboxItemID, bindingID, false)
+	case storage.InboxKindSleepUpdate:
+		title, body := "Sleep Analysis Updated", "Updated sleep analysis is ready."
+		switch locale {
+		case "ru":
+			title, body = "Обновление анализа сна", "Доступен обновлённый разбор сна."
+		case "sr":
+			title, body = "Ažurirana analiza sna", "Dostupna je ažurirana analiza sna."
+		}
+		return buildNeutralInboxPayload(kind, title, body, "", inboxItemID, bindingID, false)
+	case storage.InboxKindGuidanceChange:
+		title, body := "Guidance Updated", "Today's guidance has been updated."
+		switch locale {
+		case "ru":
+			title, body = "Обновление рекомендации", "Рекомендация на сегодня обновилась."
+		case "sr":
+			title, body = "Ažurirana preporuka", "Današnja preporuka je ažurirana."
+		}
+		return buildNeutralInboxPayload(kind, title, body, "", inboxItemID, bindingID, false)
+	case storage.InboxKindWeeklyDigest:
+		title, body := "Weekly Digest", "Your weekly data quality summary is ready."
+		switch locale {
+		case "ru":
+			title, body = "Еженедельный дайджест", "Доступна сводка качества данных."
+		case "sr":
+			title, body = "Nedeljni pregled", "Dostupan je nedeljni pregled kvaliteta podataka."
+		}
+		return buildNeutralInboxPayload(kind, title, body, "", inboxItemID, bindingID, false)
+	case storage.InboxKindNudge:
+		title, body := "Health Sync", "You have a new note in Inbox."
+		switch locale {
+		case "ru":
+			title, body = "Health Sync", "Есть новая рекомендация в Inbox."
+		case "sr":
+			title, body = "Health Sync", "Imate novu preporuku u Inbox-u."
+		}
+		return buildNeutralInboxPayload(kind, title, body, "", inboxItemID, bindingID, false)
+	case storage.InboxKindPromptWakeFeedback:
+		title, body := "Wake Time", "Confirm your wake time in Inbox."
+		switch locale {
+		case "ru":
+			title, body = "Время пробуждения", "Подтвердите время пробуждения."
+		case "sr":
+			title, body = "Vreme buđenja", "Potvrdite vreme buđenja."
+		}
+		return buildNeutralInboxPayload(kind, title, body, CategoryPromptOpen, inboxItemID, bindingID, true)
+	case storage.InboxKindPromptContext:
+		title, body := "Quick Question", "You have a short question in Inbox."
+		switch locale {
+		case "ru":
+			title, body = "Контекст дня", "Есть короткий вопрос в Inbox."
+		case "sr":
+			title, body = "Kontekst dana", "Imate kratko pitanje u Inbox-u."
+		}
+		return buildNeutralInboxPayload(kind, title, body, CategoryPromptOpen, inboxItemID, bindingID, true)
+	default:
+		return nil, errors.New("unknown push kind")
+	}
+}
+
+func buildNeutralInboxPayload(kind, title, body, category string, itemID, bindingID uuid.UUID, isPrompt bool) ([]byte, error) {
+	aps := map[string]any{
+		"alert": map[string]string{
+			"title": title,
+			"body":  body,
+		},
+		"sound": "default",
+	}
+	if category != "" {
+		aps["category"] = category
+	}
+	payload := map[string]any{
+		"aps":           aps,
+		"v":             1,
+		"kind":          kind,
+		"inbox_item_id": itemID.String(),
+		"reg_id":        bindingID.String(),
+	}
+	if isPrompt {
+		payload["prompt_id"] = itemID.String()
+	}
+	return json.Marshal(payload)
+}
+
 // ProcessTenantDeliveries runs push housekeeping and sends bounded due
 // push_deliveries rows for one tenant. It never backfills new deliveries.
 func ProcessTenantDeliveries(ctx context.Context, db *storage.DB, sender TransportSender, defaults storage.NotifyConfig, now time.Time, limit int) error {
@@ -127,6 +231,20 @@ func completeWithBudget(ctx context.Context, db *storage.DB, in storage.Complete
 }
 
 func deliverClaimed(ctx context.Context, db *storage.DB, sender TransportSender, d *storage.ClaimedPushDelivery, today string, now time.Time) {
+	// Verify device still supports the inbox contract version required by this push kind
+	// (e.g. if the user reinstalled an older TestFlight 33 build after enqueue).
+	if d.DeviceInboxContractVersion < storage.RequiredInboxContractVersion(d.Kind) {
+		if _, err := completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
+			DeliveryID:    d.ID,
+			LeaseToken:    d.LeaseToken,
+			DeliveryState: storage.PushDeliveryStateRejected,
+			Reason:        "device_contract_downgraded",
+		}); err != nil {
+			log.Printf("apns: complete device_contract_downgraded delivery=%s: %v", d.ID, err)
+		}
+		return
+	}
+
 	// Verify device registration is still active and matches the enqueued binding/version/token.
 	if !d.DeviceEnabled ||
 		d.DeviceInvalidatedAt != nil ||
@@ -144,8 +262,22 @@ func deliverClaimed(ctx context.Context, db *storage.DB, sender TransportSender,
 		return
 	}
 
-	// Verify check-in prompt is still active for today before touching APNs.
-	if d.Kind == storage.InboxKindPromptCheckin {
+	// Re-check per-category push preference right before sending.
+	if !storage.IsPushCategoryEnabled(db, d.Kind) {
+		if _, err := completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
+			DeliveryID:    d.ID,
+			LeaseToken:    d.LeaseToken,
+			DeliveryState: storage.PushDeliveryStateRejected,
+			Reason:        "category_disabled",
+		}); err != nil {
+			log.Printf("apns: complete category_disabled delivery=%s: %v", d.ID, err)
+		}
+		return
+	}
+
+	// Verify interactive prompts are still active before touching APNs.
+	switch d.Kind {
+	case storage.InboxKindPromptCheckin:
 		if d.CheckinStatus != storage.CheckinStatusPrompted ||
 			d.LocalDate != today ||
 			(d.CheckinExpiresAt != nil && !now.Before(*d.CheckinExpiresAt)) {
@@ -159,18 +291,34 @@ func deliverClaimed(ctx context.Context, db *storage.DB, sender TransportSender,
 			}
 			return
 		}
+	case storage.InboxKindPromptWakeFeedback:
+		if d.WakeFeedbackResponse != "" || d.LocalDate != today {
+			if _, err := completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
+				DeliveryID:    d.ID,
+				LeaseToken:    d.LeaseToken,
+				DeliveryState: storage.PushDeliveryStateExpired,
+				Reason:        "prompt_no_longer_active",
+			}); err != nil {
+				log.Printf("apns: complete expired wake feedback delivery=%s: %v", d.ID, err)
+			}
+			return
+		}
+	case storage.InboxKindPromptContext:
+		if d.ContextPromptStatus != storage.ContextPromptStatusPrompted ||
+			(d.ContextExpiresAt != nil && !now.Before(*d.ContextExpiresAt)) {
+			if _, err := completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
+				DeliveryID:    d.ID,
+				LeaseToken:    d.LeaseToken,
+				DeliveryState: storage.PushDeliveryStateExpired,
+				Reason:        "prompt_no_longer_active",
+			}); err != nil {
+				log.Printf("apns: complete expired context prompt delivery=%s: %v", d.ID, err)
+			}
+			return
+		}
 	}
 
-	var payload []byte
-	var err error
-	switch d.Kind {
-	case storage.InboxKindMorningReport:
-		payload, err = BuildMorningReportPayload(d.Locale, d.InboxItemID, d.BindingID)
-	case storage.InboxKindPromptCheckin:
-		payload, err = BuildCheckinPayload(d.Locale, d.InboxItemID, d.BindingID)
-	default:
-		err = errors.New("unknown push kind")
-	}
+	payload, err := BuildPayloadForKind(d.Kind, d.Locale, d.InboxItemID, d.BindingID)
 	if err != nil {
 		_, _ = completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
 			DeliveryID:    d.ID,

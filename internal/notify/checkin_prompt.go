@@ -59,12 +59,23 @@ func DeliverCheckinPromptToTelegram(bot CheckinBot, db *storage.DB, lang, date s
 	if bot == nil || db == nil || date == "" {
 		return nil
 	}
+	if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+		return checkErr
+	} else if !enabled {
+		return nil
+	}
 	key := "prompt:checkin:" + date
 	ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
 	token, reserved, err := db.ReserveNotificationDelivery(ctx, key)
 	cancel()
 	if err != nil || !reserved {
 		return err
+	}
+	if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+		return errors.Join(checkErr, completeNotificationDelivery(db, key, token, "failed", "archive_unavailable"))
+	} else if !enabled {
+		_ = completeNotificationDelivery(db, key, token, "failed", "telegram_disabled")
+		return nil
 	}
 	rows, text := buildCheckinPromptButtons(lang, date)
 	msgID, err := bot.SendInlineKeyboard(text, rows)
@@ -118,6 +129,13 @@ type CheckinStore interface {
 // Store write is skipped when the Telegram send fails so we don't
 // claim "we prompted them" when no message ever arrived.
 func SendCheckinPrompt(bot CheckinBot, store CheckinStore, lang, date string, now, expiresAt time.Time) error {
+	if db, ok := store.(*storage.DB); ok {
+		if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+			return checkErr
+		} else if !enabled {
+			return nil
+		}
+	}
 	_ = expiresAt
 	expiresAt = CheckinPromptExpiry(now)
 	rows, text := buildCheckinPromptButtons(lang, date)
@@ -132,6 +150,19 @@ func SendCheckinPrompt(bot CheckinBot, store CheckinStore, lang, date string, no
 		cancel()
 		if err != nil || !reserved {
 			return err
+		}
+	}
+	if db, ok := store.(*storage.DB); ok {
+		if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+			if delivery != nil {
+				return errors.Join(checkErr, completeNotificationDelivery(delivery, "prompt:checkin:"+date, token, "failed", "archive_unavailable"))
+			}
+			return checkErr
+		} else if !enabled {
+			if delivery != nil {
+				_ = completeNotificationDelivery(delivery, "prompt:checkin:"+date, token, "failed", "telegram_disabled")
+			}
+			return nil
 		}
 	}
 	msgID, err := bot.SendInlineKeyboard(text, rows)

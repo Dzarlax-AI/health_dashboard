@@ -23,6 +23,7 @@ const (
 	DerivedMetricStateFinal       = "final"
 
 	DerivedMetricFeedbackTelegram = "telegram"
+	DerivedMetricFeedbackInbox    = "inbox"
 	SettingWakeFeedbackEnabled    = "wake_feedback_enabled"
 
 	WakeFeedbackConfirmed     = "confirmed"
@@ -349,7 +350,7 @@ func validateDerivedMetricFeedbackIdentity(metricName, metricDate, channel strin
 	if _, err := time.Parse("2006-01-02", metricDate); err != nil {
 		return fmt.Errorf("invalid feedback date %q: %w", metricDate, err)
 	}
-	if channel != DerivedMetricFeedbackTelegram {
+	if channel != DerivedMetricFeedbackTelegram && channel != DerivedMetricFeedbackInbox {
 		return fmt.Errorf("invalid derived metric feedback channel %q", channel)
 	}
 	return nil
@@ -474,6 +475,18 @@ func (s *DB) HasRecentDerivedMetricFeedback(metricName, channel, beforeDate stri
 	ctx, cancel := queryCtx()
 	defer cancel()
 	var exists bool
+	if channel == "" {
+		err := s.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				  FROM derived_metric_feedback
+				 WHERE metric_name=$1
+				   AND metric_date < $2::date
+				   AND metric_date >= $2::date - ($3 * INTERVAL '1 day')
+			)
+		`, metricName, beforeDate, days).Scan(&exists)
+		return exists, err
+	}
 	err := s.pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1

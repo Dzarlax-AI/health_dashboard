@@ -58,6 +58,7 @@ function DashboardApp() {
   const [liveState, setLiveState] = useState<AppState>({ status: "loading" });
   const [pendingPrompts, setPendingPrompts] = useState<PendingCheckinPrompt[]>([]);
   const [inboxSupported, setInboxSupported] = useState(false);
+  const [inboxUnreadCount, setInboxUnreadCount] = useState(0);
   const [pendingReloadKey, setPendingReloadKey] = useState(0);
   const inboxDisabledRef = useRef(false);
   const pendingRetryAttemptsRef = useRef(0);
@@ -121,6 +122,7 @@ function DashboardApp() {
         pendingRetryAttemptsRef.current = 0;
         setInboxSupported(true);
         setPendingPrompts(res.prompts ?? []);
+        setInboxUnreadCount(res.unread_count ?? 0);
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) {
@@ -130,6 +132,7 @@ function DashboardApp() {
           inboxDisabledRef.current = true;
           setInboxSupported(false);
           setPendingPrompts([]);
+          setInboxUnreadCount(0);
           return;
         }
         if (error instanceof ClientApiError && error.status === 401) {
@@ -245,6 +248,7 @@ function DashboardApp() {
         locale={locale}
         isAdmin={state.status === "ready" && state.resources.session?.is_admin}
         showInbox={inboxSupported}
+        inboxUnreadCount={inboxUnreadCount}
       />
       <main className="page">
         {fixtureEnabled ? (
@@ -306,7 +310,10 @@ function DashboardApp() {
               <PendingCheckinCard
                 locale={locale}
                 prompts={pendingPrompts}
-                onAnswered={() => {
+                onAnswered={(_promptId, res) => {
+                  if (typeof res.unread_count === "number") {
+                    setInboxUnreadCount(res.unread_count);
+                  }
                   setPendingReloadKey((k) => k + 1);
                   setReloadKey((k) => k + 1);
                 }}

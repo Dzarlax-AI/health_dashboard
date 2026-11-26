@@ -494,7 +494,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Chronological feed of morning reports and morning check-in prompts */
+        /** Chronological feed of Inbox reports, updates, digests, nudges, and interactive prompts */
         get: operations["listInbox"];
         put?: never;
         post?: never;
@@ -511,10 +511,27 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Active unanswered morning check-in prompts for today */
+        /** Active unanswered interactive prompts for today (and unread_count in contract v2) */
         get: operations["listPendingInboxPrompts"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/inbox/read-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark all unread Inbox items created at or before the snapshot watermark as read */
+        post: operations["markAllInboxRead"];
         delete?: never;
         options?: never;
         head?: never;
@@ -528,10 +545,27 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Inbox item detail with normalized report text or canonical check-in state */
+        /** Inbox item detail with normalized report text or canonical interactive prompt state */
         get: operations["getInboxItem"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/inbox/{id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Idempotently mark an Inbox item as read and return updated unread_count */
+        post: operations["markInboxItemRead"];
         delete?: never;
         options?: never;
         head?: never;
@@ -599,6 +633,24 @@ export interface paths {
         /** Earliest and latest dates for a metric */
         get: operations["getMetricRange"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notifications/preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Per-profile notification schedule, APNs push category preferences, and Telegram opt-out state */
+        get: operations["getNotificationPreferences"];
+        /** Update per-profile notification schedule, APNs push category preferences, or Telegram opt-out state */
+        put: operations["putNotificationPreferences"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1655,6 +1707,7 @@ export interface components {
             workouts_upserted: number;
         };
         InboxDetailResponse: {
+            action_route?: string;
             answer?: string;
             /** Format: date-time */
             answered_at?: string;
@@ -1668,7 +1721,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             /** @enum {string} */
-            kind: "morning_report" | "prompt_checkin";
+            kind: "morning_report" | "evening_report" | "sleep_update" | "guidance_change" | "weekly_digest" | "nudge" | "prompt_checkin" | "prompt_wake_feedback" | "prompt_context";
             language?: string;
             local_date: string;
             options?: {
@@ -1690,6 +1743,7 @@ export interface components {
         };
         InboxFeedResponse: {
             items: {
+                action_route?: string;
                 answer?: string;
                 /** Format: date-time */
                 answered_at?: string;
@@ -1702,7 +1756,7 @@ export interface components {
                 /** Format: uuid */
                 id: string;
                 /** @enum {string} */
-                kind: "morning_report" | "prompt_checkin";
+                kind: "morning_report" | "evening_report" | "sleep_update" | "guidance_change" | "weekly_digest" | "nudge" | "prompt_checkin" | "prompt_wake_feedback" | "prompt_context";
                 local_date: string;
                 preview?: string;
                 /** Format: uuid */
@@ -1717,11 +1771,16 @@ export interface components {
                 title: string;
             }[];
             next_cursor?: string;
+            /** Format: date-time */
+            snapshot_at?: string;
+            unread_count?: number;
         };
         InboxPendingResponse: {
             prompts: {
                 /** Format: date-time */
                 expires_at: string;
+                /** @enum {string} */
+                kind?: "prompt_checkin" | "prompt_wake_feedback" | "prompt_context";
                 local_date: string;
                 options: {
                     id: string;
@@ -1731,6 +1790,24 @@ export interface components {
                 prompt_id: string;
                 title: string;
             }[];
+            unread_count?: number;
+        };
+        InboxReadAllRequest: {
+            /** Format: date-time */
+            before?: string;
+        };
+        InboxReadAllResponse: {
+            /** Format: date-time */
+            before: string;
+            unread_count: number;
+            updated: number;
+        };
+        InboxReadResponse: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            read_at: string;
+            unread_count: number;
         };
         LatestMetricsResponse: {
             date: string;
@@ -1860,6 +1937,40 @@ export interface components {
             }[] | null;
             tenants: string[] | null;
         };
+        NotificationPreferencesRequest: {
+            daytime_enabled?: boolean;
+            daytime_end_hour?: number;
+            daytime_start_hour?: number;
+            evening_weekday_hour?: number;
+            evening_weekend_hour?: number;
+            morning_weekday_hour?: number;
+            morning_weekend_hour?: number;
+            push_checkins?: boolean;
+            push_daytime_updates?: boolean;
+            push_digests_nudges?: boolean;
+            push_evening_report?: boolean;
+            push_morning_report?: boolean;
+            telegram_notifications_enabled?: boolean;
+        };
+        NotificationPreferencesResponse: {
+            active_push_devices_count: number;
+            apns_push_enabled: boolean;
+            daytime_enabled: boolean;
+            daytime_end_hour: number;
+            daytime_start_hour: number;
+            evening_weekday_hour: number;
+            evening_weekend_hour: number;
+            inbox_enabled: boolean;
+            morning_weekday_hour: number;
+            morning_weekend_hour: number;
+            push_checkins: boolean;
+            push_daytime_updates: boolean;
+            push_digests_nudges: boolean;
+            push_evening_report: boolean;
+            push_morning_report: boolean;
+            telegram_configured: boolean;
+            telegram_notifications_enabled: boolean;
+        };
         NotificationSettingsRequest: {
             [key: string]: string;
         };
@@ -1906,19 +2017,20 @@ export interface components {
         };
         PromptAnswerRequest: {
             /** @enum {string} */
-            answer: "great" | "ok" | "meh" | "sick";
+            answer: "great" | "ok" | "meh" | "sick" | "confirmed" | "earlier" | "later" | "returned_to_sleep" | "poor_sleep_context" | "stress_context" | "travel_context" | "unknown_context" | "skip_context";
             /** @enum {string} */
             channel: "ios_app" | "ios_push" | "web";
         };
         PromptAnswerResponse: {
             /** @enum {string} */
-            answer: "great" | "ok" | "meh" | "sick";
+            answer: "great" | "ok" | "meh" | "sick" | "confirmed" | "earlier" | "later" | "returned_to_sleep" | "poor_sleep_context" | "stress_context" | "travel_context" | "unknown_context" | "skip_context";
             /** Format: date-time */
             answered_at: string;
             /** @enum {string} */
             status: "saved" | "already_answered";
             /** @enum {string} */
             timing: "on_time" | "late";
+            unread_count?: number;
         };
         PromptExpiredResponse: {
             /** @enum {string} */
@@ -1930,6 +2042,7 @@ export interface components {
             apns_token: string;
             bundle_id: string;
             device_id: string;
+            inbox_contract_version?: number;
             /** @enum {string} */
             locale: "en" | "ru" | "sr";
             registration_attempt_id?: string;
@@ -1942,6 +2055,7 @@ export interface components {
             /** Format: uuid */
             device_id: string;
             enabled: boolean;
+            inbox_contract_version?: number;
             registration_version: number;
         };
         QualityAuditResponse: {
@@ -4568,8 +4682,15 @@ export interface operations {
                 limit?: number;
                 /** @description Opaque continuation cursor ordered by (created_at, id). */
                 cursor?: string;
+                /** @description Optional read filter for contract v2 clients. */
+                filter?: "all" | "unread";
+                /** @description Optional Inbox item kind filter for contract v2 clients. */
+                kind?: string;
             };
-            header?: never;
+            header?: {
+                /** @description Optional Inbox contract version. Omit or send 1 for v1 clients (morning_report + prompt_checkin only); send 2 for all communication scenarios, unread_count, and snapshot_at. */
+                "X-Health-Inbox-Contract"?: "1" | "2";
+            };
             path?: never;
             cookie?: never;
         };
@@ -4621,7 +4742,10 @@ export interface operations {
                 /** @description Unsupported values are ignored and the server falls back to the documented default. */
                 lang?: "en" | "ru" | "sr";
             };
-            header?: never;
+            header?: {
+                /** @description Optional Inbox contract version. Omit or send 1 for v1 clients (morning_report + prompt_checkin only); send 2 for all communication scenarios, unread_count, and snapshot_at. */
+                "X-Health-Inbox-Contract"?: "1" | "2";
+            };
             path?: never;
             cookie?: never;
         };
@@ -4667,13 +4791,72 @@ export interface operations {
             };
         };
     };
+    markAllInboxRead: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Optional Inbox contract version. Omit or send 1 for v1 clients (morning_report + prompt_checkin only); send 2 for all communication scenarios, unread_count, and snapshot_at. */
+                "X-Health-Inbox-Contract"?: "1" | "2";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["InboxReadAllRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxReadAllResponse"];
+                };
+            };
+            /** @description Invalid JSON body. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Authentication is required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description In-app Inbox is disabled for this profile. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
     getInboxItem: {
         parameters: {
             query?: {
                 /** @description Unsupported values are ignored and the server falls back to the documented default. */
                 lang?: "en" | "ru" | "sr";
             };
-            header?: never;
+            header?: {
+                /** @description Optional Inbox contract version. Omit or send 1 for v1 clients (morning_report + prompt_checkin only); send 2 for all communication scenarios, unread_count, and snapshot_at. */
+                "X-Health-Inbox-Contract"?: "1" | "2";
+            };
             path: {
                 id: string;
             };
@@ -4712,6 +4895,49 @@ export interface operations {
             };
             /** @description The backend could not load or encode the tenant response. */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    markInboxItemRead: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Optional Inbox contract version. Omit or send 1 for v1 clients (morning_report + prompt_checkin only); send 2 for all communication scenarios, unread_count, and snapshot_at. */
+                "X-Health-Inbox-Contract"?: "1" | "2";
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxReadResponse"];
+                };
+            };
+            /** @description Authentication is required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description In-app Inbox is disabled for this profile, or the requested item was not found. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5017,6 +5243,101 @@ export interface operations {
                 };
             };
             /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    getNotificationPreferences: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationPreferencesResponse"];
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not load or encode the tenant response. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    putNotificationPreferences: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationPreferencesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationPreferencesResponse"];
+                };
+            };
+            /** @description Invalid notification preference values. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not update or encode the tenant response. */
             500: {
                 headers: {
                     [name: string]: unknown;

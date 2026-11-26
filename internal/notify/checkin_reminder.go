@@ -32,6 +32,13 @@ func SendCheckinReminderOnce(bot CheckinBot, store CheckinReminderStore, lang, d
 	if bot == nil || store == nil || date == "" {
 		return false, errors.New("check-in reminder requires bot, store, and date")
 	}
+	if db, ok := store.(*storage.DB); ok {
+		if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+			return false, checkErr
+		} else if !enabled {
+			return false, nil
+		}
+	}
 	var row *storage.CheckinRow
 	if canonical, ok := store.(interface {
 		GetCanonicalTodayCheckin(date string) (*storage.CheckinRow, error)
@@ -53,6 +60,14 @@ func SendCheckinReminderOnce(bot CheckinBot, store CheckinReminderStore, lang, d
 	cancel()
 	if err != nil || !reserved {
 		return false, err
+	}
+	if db, ok := store.(*storage.DB); ok {
+		if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+			return false, errors.Join(checkErr, completeNotificationDelivery(store, key, token, "failed", "archive_unavailable"))
+		} else if !enabled {
+			_ = completeNotificationDelivery(store, key, token, "failed", "telegram_disabled")
+			return false, nil
+		}
 	}
 
 	buttons, _ := buildCheckinPromptButtons(lang, date)

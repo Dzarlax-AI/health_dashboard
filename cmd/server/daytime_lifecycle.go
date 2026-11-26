@@ -13,12 +13,23 @@ import (
 func runDaytimeLifecycle(ctx context.Context, db *storage.DB, defaults storage.NotifyConfig, baseURL string) {
 	tick := func() {
 		cfg := buildNotifyCfg(db, db.GetNotifyConfig(defaults))
-		if !cfg.DaytimeEnabled || !cfg.Enabled() {
+		inboxEnabled := storage.IsInAppInboxEnabled(db)
+		if !inboxEnabled && !cfg.Enabled() {
 			return
+		}
+		var bot *notify.Bot
+		if cfg.Enabled() {
+			bot = notify.NewBot(cfg.Token, cfg.ChatID)
 		}
 		bounded, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
-		notify.MaybeFireDaytime(bounded, notify.NewBot(cfg.Token, cfg.ChatID), db, cfg, baseURL, time.Now())
+		if inboxEnabled && bot != nil && cfg.Enabled() {
+			today := db.TenantLocalDate(defaults, time.Now())
+			_, _ = notify.RetryPendingInboxTelegramReports(bounded, bot, db, cfg, today, nil)
+		}
+		if cfg.DaytimeEnabled {
+			notify.MaybeFireDaytime(bounded, bot, db, cfg, baseURL, time.Now())
+		}
 	}
 	tick()
 	ticker := time.NewTicker(time.Minute)

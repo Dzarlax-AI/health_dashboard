@@ -279,3 +279,23 @@ func TestConfiguredAPNSTransportPreservesMissingSender(t *testing.T) {
 		t.Fatal("configured transport must preserve the sender")
 	}
 }
+
+func TestExistingInboxWakePromptKeepsSuppressingContextWithoutTelegram(t *testing.T) {
+	db, _, _, cleanup := setupServerInboxTestDB(t, "srv_wake_inbox_repeat")
+	defer cleanup()
+	now := time.Now().UTC()
+	date := now.Format("2006-01-02")
+	proposed, err := json.Marshal(now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, created, err := db.EnsureCanonicalWakeFeedbackPrompt(context.Background(), date, proposed, storage.WakeConfidenceHigh, now); err != nil || !created {
+		t.Fatalf("publish wake feedback: created=%v err=%v", created, err)
+	}
+
+	for range 2 {
+		if !trySendWakeFeedbackAfterMorning(nil, db, notify.Config{}, date, now, true, false) {
+			t.Fatal("existing Inbox wake feedback must keep suppressing context prompts")
+		}
+	}
+}

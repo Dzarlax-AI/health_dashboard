@@ -2855,6 +2855,9 @@
       "InboxDetailResponse": {
         "additionalProperties": false,
         "properties": {
+          "action_route": {
+            "type": "string"
+          },
           "answer": {
             "type": "string"
           },
@@ -2889,7 +2892,14 @@
           "kind": {
             "enum": [
               "morning_report",
-              "prompt_checkin"
+              "evening_report",
+              "sleep_update",
+              "guidance_change",
+              "weekly_digest",
+              "nudge",
+              "prompt_checkin",
+              "prompt_wake_feedback",
+              "prompt_context"
             ],
             "type": "string"
           },
@@ -2967,6 +2977,9 @@
             "items": {
               "additionalProperties": false,
               "properties": {
+                "action_route": {
+                  "type": "string"
+                },
                 "answer": {
                   "type": "string"
                 },
@@ -2998,7 +3011,14 @@
                 "kind": {
                   "enum": [
                     "morning_report",
-                    "prompt_checkin"
+                    "evening_report",
+                    "sleep_update",
+                    "guidance_change",
+                    "weekly_digest",
+                    "nudge",
+                    "prompt_checkin",
+                    "prompt_wake_feedback",
+                    "prompt_context"
                   ],
                   "type": "string"
                 },
@@ -3047,6 +3067,13 @@
           },
           "next_cursor": {
             "type": "string"
+          },
+          "snapshot_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "unread_count": {
+            "type": "integer"
           }
         },
         "required": [
@@ -3063,6 +3090,14 @@
               "properties": {
                 "expires_at": {
                   "format": "date-time",
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "prompt_checkin",
+                    "prompt_wake_feedback",
+                    "prompt_context"
+                  ],
                   "type": "string"
                 },
                 "local_date": {
@@ -3108,10 +3143,66 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "unread_count": {
+            "type": "integer"
           }
         },
         "required": [
           "prompts"
+        ],
+        "type": "object"
+      },
+      "InboxReadAllRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "before": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "InboxReadAllResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "before": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "unread_count": {
+            "type": "integer"
+          },
+          "updated": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "updated",
+          "unread_count",
+          "before"
+        ],
+        "type": "object"
+      },
+      "InboxReadResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "read_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "unread_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "read_at",
+          "unread_count"
         ],
         "type": "object"
       },
@@ -3703,6 +3794,127 @@
         ],
         "type": "object"
       },
+      "NotificationPreferencesRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "daytime_enabled": {
+            "type": "boolean"
+          },
+          "daytime_end_hour": {
+            "type": "integer"
+          },
+          "daytime_start_hour": {
+            "type": "integer"
+          },
+          "evening_weekday_hour": {
+            "type": "integer"
+          },
+          "evening_weekend_hour": {
+            "type": "integer"
+          },
+          "morning_weekday_hour": {
+            "type": "integer"
+          },
+          "morning_weekend_hour": {
+            "type": "integer"
+          },
+          "push_checkins": {
+            "type": "boolean"
+          },
+          "push_daytime_updates": {
+            "type": "boolean"
+          },
+          "push_digests_nudges": {
+            "type": "boolean"
+          },
+          "push_evening_report": {
+            "type": "boolean"
+          },
+          "push_morning_report": {
+            "type": "boolean"
+          },
+          "telegram_notifications_enabled": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "NotificationPreferencesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "active_push_devices_count": {
+            "type": "integer"
+          },
+          "apns_push_enabled": {
+            "type": "boolean"
+          },
+          "daytime_enabled": {
+            "type": "boolean"
+          },
+          "daytime_end_hour": {
+            "type": "integer"
+          },
+          "daytime_start_hour": {
+            "type": "integer"
+          },
+          "evening_weekday_hour": {
+            "type": "integer"
+          },
+          "evening_weekend_hour": {
+            "type": "integer"
+          },
+          "inbox_enabled": {
+            "type": "boolean"
+          },
+          "morning_weekday_hour": {
+            "type": "integer"
+          },
+          "morning_weekend_hour": {
+            "type": "integer"
+          },
+          "push_checkins": {
+            "type": "boolean"
+          },
+          "push_daytime_updates": {
+            "type": "boolean"
+          },
+          "push_digests_nudges": {
+            "type": "boolean"
+          },
+          "push_evening_report": {
+            "type": "boolean"
+          },
+          "push_morning_report": {
+            "type": "boolean"
+          },
+          "telegram_configured": {
+            "type": "boolean"
+          },
+          "telegram_notifications_enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "inbox_enabled",
+          "apns_push_enabled",
+          "telegram_configured",
+          "telegram_notifications_enabled",
+          "active_push_devices_count",
+          "morning_weekday_hour",
+          "morning_weekend_hour",
+          "evening_weekday_hour",
+          "evening_weekend_hour",
+          "daytime_enabled",
+          "daytime_start_hour",
+          "daytime_end_hour",
+          "push_morning_report",
+          "push_evening_report",
+          "push_checkins",
+          "push_daytime_updates",
+          "push_digests_nudges"
+        ],
+        "type": "object"
+      },
       "NotificationSettingsRequest": {
         "additionalProperties": {
           "type": "string"
@@ -3921,7 +4133,16 @@
               "great",
               "ok",
               "meh",
-              "sick"
+              "sick",
+              "confirmed",
+              "earlier",
+              "later",
+              "returned_to_sleep",
+              "poor_sleep_context",
+              "stress_context",
+              "travel_context",
+              "unknown_context",
+              "skip_context"
             ],
             "type": "string"
           },
@@ -3948,7 +4169,16 @@
               "great",
               "ok",
               "meh",
-              "sick"
+              "sick",
+              "confirmed",
+              "earlier",
+              "later",
+              "returned_to_sleep",
+              "poor_sleep_context",
+              "stress_context",
+              "travel_context",
+              "unknown_context",
+              "skip_context"
             ],
             "type": "string"
           },
@@ -3969,6 +4199,9 @@
               "late"
             ],
             "type": "string"
+          },
+          "unread_count": {
+            "type": "integer"
           }
         },
         "required": [
@@ -4013,6 +4246,9 @@
           "device_id": {
             "type": "string"
           },
+          "inbox_contract_version": {
+            "type": "integer"
+          },
           "locale": {
             "enum": [
               "en",
@@ -4054,6 +4290,9 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "inbox_contract_version": {
+            "type": "integer"
           },
           "registration_version": {
             "type": "integer"
@@ -10086,6 +10325,19 @@
         "operationId": "listInbox",
         "parameters": [
           {
+            "description": "Optional Inbox contract version. Omit or send 1 for v1 clients (morning_report + prompt_checkin only); send 2 for all communication scenarios, unread_count, and snapshot_at.",
+            "in": "header",
+            "name": "X-Health-Inbox-Contract",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1",
+                "2"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "description": "Unsupported values are ignored and the server falls back to the documented default.",
             "in": "query",
             "name": "lang",
@@ -10115,6 +10367,27 @@
             "description": "Opaque continuation cursor ordered by (created_at, id).",
             "in": "query",
             "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional read filter for contract v2 clients.",
+            "in": "query",
+            "name": "filter",
+            "schema": {
+              "enum": [
+                "all",
+                "unread"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional Inbox item kind filter for contract v2 clients.",
+            "in": "query",
+            "name": "kind",
             "required": false,
             "schema": {
               "type": "string"
@@ -10172,13 +10445,26 @@
             "description": "The backend could not load or encode the tenant response."
           }
         },
-        "summary": "Chronological feed of morning reports and morning check-in prompts"
+        "summary": "Chronological feed of Inbox reports, updates, digests, nudges, and interactive prompts"
       }
     },
     "/api/inbox/pending": {
       "get": {
         "operationId": "listPendingInboxPrompts",
         "parameters": [
+          {
+            "description": "Optional Inbox contract version. Omit or send 1 for v1 clients (morning_report + prompt_checkin only); send 2 for all communication scenarios, unread_count, and snapshot_at.",
+            "in": "header",
+            "name": "X-Health-Inbox-Contract",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1",
+                "2"
+              ],
+              "type": "string"
+            }
+          },
           {
             "description": "Unsupported values are ignored and the server falls back to the documented default.",
             "in": "query",
@@ -10246,13 +10532,108 @@
             "description": "The backend could not load or encode the tenant response."
           }
         },
-        "summary": "Active unanswered morning check-in prompts for today"
+        "summary": "Active unanswered interactive prompts for today (and unread_count in contract v2)"
+      }
+    },
+    "/api/inbox/read-all": {
+      "post": {
+        "operationId": "markAllInboxRead",
+        "parameters": [
+          {
+            "description": "Optional Inbox contract version. Omit or send 1 for v1 clients (morning_report + prompt_checkin only); send 2 for all communication scenarios, unread_count, and snapshot_at.",
+            "in": "header",
+            "name": "X-Health-Inbox-Contract",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1",
+                "2"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboxReadAllRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxReadAllResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid JSON body."
+          },
+          "401": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Authentication is required."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "In-app Inbox is disabled for this profile."
+          }
+        },
+        "summary": "Mark all unread Inbox items created at or before the snapshot watermark as read"
       }
     },
     "/api/inbox/{id}": {
       "get": {
         "operationId": "getInboxItem",
         "parameters": [
+          {
+            "description": "Optional Inbox contract version. Omit or send 1 for v1 clients (morning_report + prompt_checkin only); send 2 for all communication scenarios, unread_count, and snapshot_at.",
+            "in": "header",
+            "name": "X-Health-Inbox-Contract",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1",
+                "2"
+              ],
+              "type": "string"
+            }
+          },
           {
             "in": "path",
             "name": "id",
@@ -10329,7 +10710,69 @@
             "description": "The backend could not load or encode the tenant response."
           }
         },
-        "summary": "Inbox item detail with normalized report text or canonical check-in state"
+        "summary": "Inbox item detail with normalized report text or canonical interactive prompt state"
+      }
+    },
+    "/api/inbox/{id}/read": {
+      "post": {
+        "operationId": "markInboxItemRead",
+        "parameters": [
+          {
+            "description": "Optional Inbox contract version. Omit or send 1 for v1 clients (morning_report + prompt_checkin only); send 2 for all communication scenarios, unread_count, and snapshot_at.",
+            "in": "header",
+            "name": "X-Health-Inbox-Contract",
+            "required": false,
+            "schema": {
+              "enum": [
+                "1",
+                "2"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxReadResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "401": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Authentication is required."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "In-app Inbox is disabled for this profile, or the requested item was not found."
+          }
+        },
+        "summary": "Idempotently mark an Inbox item as read and return updated unread_count"
       }
     },
     "/api/metrics": {
@@ -10913,6 +11356,127 @@
           }
         },
         "summary": "Earliest and latest dates for a metric"
+      }
+    },
+    "/api/notifications/preferences": {
+      "get": {
+        "operationId": "getNotificationPreferences",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPreferencesResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not load or encode the tenant response."
+          }
+        },
+        "summary": "Per-profile notification schedule, APNs push category preferences, and Telegram opt-out state"
+      },
+      "put": {
+        "operationId": "putNotificationPreferences",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationPreferencesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPreferencesResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid notification preference values."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The backend could not update or encode the tenant response."
+          }
+        },
+        "summary": "Update per-profile notification schedule, APNs push category preferences, or Telegram opt-out state"
       }
     },
     "/api/prompts/{prompt_id}/answer": {

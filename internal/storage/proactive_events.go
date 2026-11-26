@@ -201,9 +201,15 @@ type ArchivedGuidance struct {
 }
 
 // LastDeliveredGuidance reads only confirmed reports. It never initiates generation.
+// When in-app Inbox is enabled, reports published to inbox_items count as delivered
+// alongside Telegram-sent reports so daytime rules work for Inbox-only profiles.
 func (s *DB) LastDeliveredGuidance(ctx context.Context, localDate, kind string) (*ArchivedGuidance, error) {
 	var g ArchivedGuidance
-	err := s.pool.QueryRow(ctx, `SELECT h.id,h.prepared_at,h.decision_id,h.context FROM report_history h WHERE h.local_date=$1 AND h.kind=$2 AND NOT h.is_preview AND EXISTS (SELECT 1 FROM report_delivery_attempts a WHERE a.report_id=h.id AND a.status='sent') ORDER BY h.prepared_at DESC,h.id DESC LIMIT 1`, localDate, kind).Scan(&g.ReportID, &g.PreparedAt, &g.DecisionID, &g.Context)
+	q := `SELECT h.id,h.prepared_at,h.decision_id,h.context FROM report_history h WHERE h.local_date=$1 AND h.kind=$2 AND NOT h.is_preview AND EXISTS (SELECT 1 FROM report_delivery_attempts a WHERE a.report_id=h.id AND a.status='sent') ORDER BY h.prepared_at DESC,h.id DESC LIMIT 1`
+	if IsInAppInboxEnabled(s) {
+		q = `SELECT h.id,h.prepared_at,h.decision_id,h.context FROM report_history h WHERE h.local_date=$1 AND h.kind=$2 AND NOT h.is_preview AND (EXISTS (SELECT 1 FROM report_delivery_attempts a WHERE a.report_id=h.id AND a.status='sent') OR EXISTS (SELECT 1 FROM inbox_items i WHERE i.report_id=h.id)) ORDER BY h.prepared_at DESC,h.id DESC LIMIT 1`
+	}
+	err := s.pool.QueryRow(ctx, q, localDate, kind).Scan(&g.ReportID, &g.PreparedAt, &g.DecisionID, &g.Context)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -215,7 +221,11 @@ func (s *DB) LastDeliveredGuidance(ctx context.Context, localDate, kind string) 
 
 func (s *DB) LastDeliveredProactiveAnalysis(ctx context.Context, localDate, rule string) (*ArchivedGuidance, error) {
 	var g ArchivedGuidance
-	err := s.pool.QueryRow(ctx, `SELECT h.id,h.prepared_at,h.decision_id,h.context FROM report_history h WHERE h.local_date=$1 AND h.kind='proactive' AND h.context->'proactive'->>'rule'=$2 AND NOT h.is_preview AND EXISTS (SELECT 1 FROM report_delivery_attempts a WHERE a.report_id=h.id AND a.status='sent') ORDER BY h.prepared_at DESC,h.id DESC LIMIT 1`, localDate, rule).Scan(&g.ReportID, &g.PreparedAt, &g.DecisionID, &g.Context)
+	q := `SELECT h.id,h.prepared_at,h.decision_id,h.context FROM report_history h WHERE h.local_date=$1 AND h.kind='proactive' AND h.context->'proactive'->>'rule'=$2 AND NOT h.is_preview AND EXISTS (SELECT 1 FROM report_delivery_attempts a WHERE a.report_id=h.id AND a.status='sent') ORDER BY h.prepared_at DESC,h.id DESC LIMIT 1`
+	if IsInAppInboxEnabled(s) {
+		q = `SELECT h.id,h.prepared_at,h.decision_id,h.context FROM report_history h WHERE h.local_date=$1 AND h.kind='proactive' AND h.context->'proactive'->>'rule'=$2 AND NOT h.is_preview AND (EXISTS (SELECT 1 FROM report_delivery_attempts a WHERE a.report_id=h.id AND a.status='sent') OR EXISTS (SELECT 1 FROM inbox_items i WHERE i.report_id=h.id)) ORDER BY h.prepared_at DESC,h.id DESC LIMIT 1`
+	}
+	err := s.pool.QueryRow(ctx, q, localDate, rule).Scan(&g.ReportID, &g.PreparedAt, &g.DecisionID, &g.Context)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

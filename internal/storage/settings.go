@@ -1,13 +1,16 @@
 package storage
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"health-receiver/internal/ai"
 )
 
@@ -261,6 +264,7 @@ type NotifyConfig struct {
 	EveningWeekdayHour   int
 	EveningWeekendHour   int
 	TelegramRichMessages bool
+	TelegramDisabled     bool
 	DaytimeEnabled       bool
 	DaytimeStartHour     int
 	DaytimeEndHour       int
@@ -271,9 +275,151 @@ type NotifyConfig struct {
 	MorningCapHour int
 }
 
-// Enabled returns true when Telegram credentials are present.
-func (c NotifyConfig) Enabled() bool {
+const (
+	SettingTelegramNotificationsEnabled = "telegram_notifications_enabled"
+	SettingPushPrefMorningReport        = "push_pref_morning_report"
+	SettingPushPrefEveningReport        = "push_pref_evening_report"
+	SettingPushPrefCheckins             = "push_pref_checkins"
+	SettingPushPrefDaytimeUpdates       = "push_pref_daytime_updates"
+	SettingPushPrefDigestsNudges        = "push_pref_digests_nudges"
+)
+
+// HasTelegramCredentials returns true when Telegram bot credentials are configured
+// (via per-tenant settings or env defaults), regardless of the per-profile opt-out flag.
+func (c NotifyConfig) HasTelegramCredentials() bool {
 	return c.Token != "" && c.ChatID != ""
+}
+
+// Enabled returns true when Telegram credentials are present AND the per-profile
+// telegram_notifications_enabled flag has not been turned off.
+func (c NotifyConfig) Enabled() bool {
+	return !c.TelegramDisabled && c.HasTelegramCredentials()
+}
+
+// CheckTelegramNotificationsEnabled reads telegram_notifications_enabled
+// directly from PostgreSQL without swallowing database errors. Missing rows
+// default to true; any read error returns (false, err) so outbound send gates
+// fail closed and defer delivery rather than leaking messages when the DB is
+// unhealthy.
+func CheckTelegramNotificationsEnabled(ctx context.Context, s *DB) (bool, error) {
+	if s == nil {
+		return true, nil
+	}
+	var raw string
+	err := s.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, SettingTelegramNotificationsEnabled).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return parseSettingBool(raw, true), nil
+}
+
+func telegramNotificationsEnabledTx(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var raw string
+	err := tx.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, SettingTelegramNotificationsEnabled).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return parseSettingBool(raw, true), nil
+}
+
+// IsTelegramNotificationsEnabled reads the live per-profile Telegram outbound
+// barrier directly from settings (defaults to true when unset, fails closed on
+// database errors).
+func IsTelegramNotificationsEnabled(s *DB) bool {
+	if s == nil {
+		return true
+	}
+	ctx, cancel := queryCtx()
+	defer cancel()
+	enabled, err := CheckTelegramNotificationsEnabled(ctx, s)
+	if err != nil {
+		return false
+	}
+	return enabled
+}
+
+// PushCategoryPreferences holds per-category APNs push opt-in flags for a profile.
+// Disabling a category suppresses APNs push enqueueing while still publishing
+// the card into the in-app Inbox.
+type PushCategoryPreferences struct {
+	MorningReport  bool
+	EveningReport  bool
+	Checkins       bool
+	DaytimeUpdates bool
+	DigestsNudges  bool
+}
+
+func PushPrefSettingKeyForKind(kind string) string {
+	switch kind {
+	case InboxKindMorningReport:
+		return SettingPushPrefMorningReport
+	case InboxKindEveningReport:
+		return SettingPushPrefEveningReport
+	case InboxKindPromptCheckin, InboxKindPromptWakeFeedback, InboxKindPromptContext:
+		return SettingPushPrefCheckins
+	case InboxKindSleepUpdate, InboxKindGuidanceChange:
+		return SettingPushPrefDaytimeUpdates
+	case InboxKindWeeklyDigest, InboxKindNudge:
+		return SettingPushPrefDigestsNudges
+	default:
+		return ""
+	}
+}
+
+func GetPushCategoryPreferences(s *DB) PushCategoryPreferences {
+	if s == nil {
+		return PushCategoryPreferences{
+			MorningReport:  true,
+			EveningReport:  true,
+			Checkins:       true,
+			DaytimeUpdates: true,
+			DigestsNudges:  true,
+		}
+	}
+	return PushCategoryPreferences{
+		MorningReport:  getSettingBool(s, SettingPushPrefMorningReport, true),
+		EveningReport:  getSettingBool(s, SettingPushPrefEveningReport, true),
+		Checkins:       getSettingBool(s, SettingPushPrefCheckins, true),
+		DaytimeUpdates: getSettingBool(s, SettingPushPrefDaytimeUpdates, true),
+		DigestsNudges:  getSettingBool(s, SettingPushPrefDigestsNudges, true),
+	}
+}
+
+func IsPushCategoryEnabled(s *DB, kind string) bool {
+	key := PushPrefSettingKeyForKind(kind)
+	if key == "" {
+		return false
+	}
+	if s == nil {
+		return true
+	}
+	return getSettingBool(s, key, true)
+}
+
+func pushPrefEnabledTx(ctx context.Context, tx pgx.Tx, kind string) bool {
+	key := PushPrefSettingKeyForKind(kind)
+	if key == "" {
+		return false
+	}
+	var val string
+	err := tx.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, key).Scan(&val)
+	if errors.Is(err, pgx.ErrNoRows) || val == "" {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	b, err := strconv.ParseBool(val)
+	if err != nil {
+		return true
+	}
+	return b
 }
 
 // GetSettingExists reports whether a row for `key` exists in the
@@ -404,6 +550,7 @@ func (s *DB) GetNotifyConfig(defaults NotifyConfig) NotifyConfig {
 		EveningWeekdayHour:   getSettingInt(s, "report_evening_weekday", defaults.EveningWeekdayHour),
 		EveningWeekendHour:   getSettingInt(s, "report_evening_weekend", defaults.EveningWeekendHour),
 		TelegramRichMessages: getSettingBool(s, "telegram_rich_messages", defaults.TelegramRichMessages),
+		TelegramDisabled:     !getSettingBool(s, SettingTelegramNotificationsEnabled, !defaults.TelegramDisabled),
 		DaytimeEnabled:       getSettingBool(s, "report_daytime_enabled", false),
 		DaytimeStartHour:     getSettingInt(s, "report_daytime_start_hour", 9),
 		DaytimeEndHour:       getSettingInt(s, "report_daytime_end_hour", 21),
@@ -435,13 +582,16 @@ func getSettingInt(s *DB, key string, fallback int) int {
 // value, NOT to zero-bool — important because callers like
 // StressDrainEnabled default to false but other future bool flags
 // might default to true.
-func getSettingBool(s *DB, key string, fallback bool) bool {
-	v := s.GetSetting(key, "")
-	if v == "" {
+func parseSettingBool(raw string, fallback bool) bool {
+	if raw == "" {
 		return fallback
 	}
-	if b, err := strconv.ParseBool(v); err == nil {
+	if b, err := strconv.ParseBool(raw); err == nil {
 		return b
 	}
 	return fallback
+}
+
+func getSettingBool(s *DB, key string, fallback bool) bool {
+	return parseSettingBool(s.GetSetting(key, ""), fallback)
 }

@@ -8,7 +8,7 @@ import (
 )
 
 func TestTrySendWakeFeedbackAfterMorningRequiresWebhook(t *testing.T) {
-	if trySendWakeFeedbackAfterMorning(nil, nil, notify.Config{}, "2026-08-05", time.Now(), false) {
+	if trySendWakeFeedbackAfterMorning(nil, nil, notify.Config{}, "2026-08-05", time.Now(), false, false) {
 		t.Fatal("wake feedback sent without an available callback webhook")
 	}
 }

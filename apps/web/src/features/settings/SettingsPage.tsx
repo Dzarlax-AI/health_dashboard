@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
-import { ClientApiError } from "../../api/client";
+import {
+  ClientApiError,
+  getNotificationPreferences,
+  putNotificationPreferences,
+  type NotificationPreferencesResponse,
+} from "../../api/client";
 import {
   getEnergyBackfillStatus,
   getEnergyBackfillSummary,
@@ -90,6 +95,17 @@ export function SettingsPage() {
   const [importPhase, setImportPhase] = useState<"idle" | "uploading" | "running">("idle");
   const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+
+  // In-app & push notification preferences
+  const [notifPrefs, setNotifPrefs] = useState<NotificationPreferencesResponse | null>(null);
+  const [pushMorning, setPushMorning] = useState(true);
+  const [pushEvening, setPushEvening] = useState(true);
+  const [pushCheckins, setPushCheckins] = useState(true);
+  const [pushDaytime, setPushDaytime] = useState(true);
+  const [pushDigests, setPushDigests] = useState(true);
+  const [telegramDeliveryEnabled, setTelegramDeliveryEnabled] = useState(true);
+  const [savingPrefs, setSavingPrefs] = useState(false);
+  const [prefsNotice, setPrefsNotice] = useState<NoticeState | null>(null);
 
   // Telegram notifications
   const [telegramToken, setTelegramToken] = useState("");
@@ -267,6 +283,18 @@ export function SettingsPage() {
         // Hydrate secondary panels independently
         void refreshWebhook();
         void refreshEnergySummary();
+        void getNotificationPreferences(controller.signal)
+          .then((prefs) => {
+            if (controller.signal.aborted) return;
+            setNotifPrefs(prefs);
+            setPushMorning(prefs.push_morning_report);
+            setPushEvening(prefs.push_evening_report);
+            setPushCheckins(prefs.push_checkins);
+            setPushDaytime(prefs.push_daytime_updates);
+            setPushDigests(prefs.push_digests_nudges);
+            setTelegramDeliveryEnabled(prefs.telegram_notifications_enabled);
+          })
+          .catch(() => undefined);
         void getImportStatus(controller.signal)
           .then((s) => {
             if (!controller.signal.aborted && s.running) {
@@ -389,7 +417,40 @@ export function SettingsPage() {
     }
   };
 
-  const handleTestNotify = async (kind: "morning" | "evening") => {
+  const handleSaveNotifPrefs = async (event: FormEvent) => {
+    event.preventDefault();
+    if (savingPrefs) return;
+    setSavingPrefs(true);
+    setPrefsNotice(null);
+    try {
+      const updated = await putNotificationPreferences({
+        push_morning_report: pushMorning,
+        push_evening_report: pushEvening,
+        push_checkins: pushCheckins,
+        push_daytime_updates: pushDaytime,
+        push_digests_nudges: pushDigests,
+        telegram_notifications_enabled: telegramDeliveryEnabled,
+      });
+      setNotifPrefs(updated);
+      setPushMorning(updated.push_morning_report);
+      setPushEvening(updated.push_evening_report);
+      setPushCheckins(updated.push_checkins);
+      setPushDaytime(updated.push_daytime_updates);
+      setPushDigests(updated.push_digests_nudges);
+      setTelegramDeliveryEnabled(updated.telegram_notifications_enabled);
+      setPrefsNotice({ tone: "good", text: tp(locale, "notifyPrefsSaved") });
+    } catch (error: unknown) {
+      setPrefsNotice({
+        tone: "danger",
+        text:
+          error instanceof Error ? error.message : tp(locale, "notifyPrefsSaveError"),
+      });
+    } finally {
+      setSavingPrefs(false);
+    }
+  };
+
+  const handleTestNotify = async (kind: "morning" | "evening" | "connection") => {
     setNotifyNotice(null);
     try {
       const result = await sendTestNotification(kind);
@@ -458,7 +519,11 @@ export function SettingsPage() {
 
   return (
     <div className="app-shell" data-locale={locale}>
-      <AppHeader locale={locale} isAdmin={isAdmin} />
+      <AppHeader
+        locale={locale}
+        isAdmin={isAdmin}
+        showInbox={Boolean(notifPrefs?.inbox_enabled)}
+      />
       <main className="subpage subpage--narrow">
         <header className="subpage__header">
           <div className="subpage__heading">
@@ -684,6 +749,152 @@ export function SettingsPage() {
                 ) : null}
               </div>
             </section>
+
+            {/* In-app & push notification preferences */}
+            {notifPrefs ? (
+              <section className="panel" aria-labelledby="notify-prefs-heading">
+                <h2 className="panel__title" id="notify-prefs-heading">
+                  {tp(locale, "notifyPrefsTitle")}
+                </h2>
+                <p className="subpage__muted">{tp(locale, "notifyPrefsDesc")}</p>
+                <div className="notify-channel-pills">
+                  <span
+                    className={
+                      notifPrefs.inbox_enabled ? "pill pill--good" : "pill"
+                    }
+                  >
+                    {tp(locale, "notifyChannelInbox")}:{" "}
+                    {notifPrefs.inbox_enabled
+                      ? tp(locale, "notifyChannelActive")
+                      : tp(locale, "notifyChannelDisabled")}
+                  </span>
+                  <span
+                    className={
+                      notifPrefs.apns_push_enabled &&
+                      notifPrefs.active_push_devices_count > 0
+                        ? "pill pill--good"
+                        : "pill"
+                    }
+                  >
+                    {tp(locale, "notifyChannelPush")}:{" "}
+                    {!notifPrefs.apns_push_enabled
+                      ? tp(locale, "notifyChannelDisabled")
+                      : notifPrefs.active_push_devices_count > 0
+                        ? tp(locale, "notifyPushDevices", {
+                            count: notifPrefs.active_push_devices_count,
+                          })
+                        : tp(locale, "notifyPushNoDevices")}
+                  </span>
+                  <span
+                    className={
+                      notifPrefs.telegram_configured && telegramDeliveryEnabled
+                        ? "pill pill--good"
+                        : notifPrefs.telegram_configured
+                          ? "pill pill--warn"
+                          : "pill"
+                    }
+                  >
+                    {tp(locale, "notifyChannelTelegram")}:{" "}
+                    {!notifPrefs.telegram_configured
+                      ? tp(locale, "notifyChannelNotConfigured")
+                      : telegramDeliveryEnabled
+                        ? tp(locale, "notifyChannelActive")
+                        : tp(locale, "notifyChannelDisabled")}
+                  </span>
+                </div>
+
+                <form className="field-grid" onSubmit={handleSaveNotifPrefs}>
+                  <div className="field">
+                    <span className="field__label">
+                      {tp(locale, "notifyPushCategories")}
+                    </span>
+                    <label className="field__checkbox">
+                      <input
+                        type="checkbox"
+                        checked={pushMorning}
+                        onChange={(e) => setPushMorning(e.target.checked)}
+                      />
+                      {tp(locale, "notifyPushMorning")}
+                    </label>
+                    <label className="field__checkbox">
+                      <input
+                        type="checkbox"
+                        checked={pushEvening}
+                        onChange={(e) => setPushEvening(e.target.checked)}
+                      />
+                      {tp(locale, "notifyPushEvening")}
+                    </label>
+                    <label className="field__checkbox">
+                      <input
+                        type="checkbox"
+                        checked={pushCheckins}
+                        onChange={(e) => setPushCheckins(e.target.checked)}
+                      />
+                      {tp(locale, "notifyPushCheckins")}
+                    </label>
+                    <label className="field__checkbox">
+                      <input
+                        type="checkbox"
+                        checked={pushDaytime}
+                        onChange={(e) => setPushDaytime(e.target.checked)}
+                      />
+                      {tp(locale, "notifyPushDaytime")}
+                    </label>
+                    <label className="field__checkbox">
+                      <input
+                        type="checkbox"
+                        checked={pushDigests}
+                        onChange={(e) => setPushDigests(e.target.checked)}
+                      />
+                      {tp(locale, "notifyPushDigests")}
+                    </label>
+                  </div>
+
+                  <div className="field">
+                    <label className="field__checkbox">
+                      <input
+                        type="checkbox"
+                        checked={telegramDeliveryEnabled}
+                        onChange={(e) =>
+                          setTelegramDeliveryEnabled(e.target.checked)
+                        }
+                      />
+                      {tp(locale, "notifyTelegramDeliveryLabel")}
+                    </label>
+                    <span className="field__hint">
+                      {tp(locale, "notifyTelegramDeliveryHint")}
+                    </span>
+                    {!telegramDeliveryEnabled &&
+                    notifPrefs.active_push_devices_count === 0 ? (
+                      <div className="notice notice--warn" role="status">
+                        {tp(locale, "notifyTelegramOffNoPushWarning")}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="btn-row">
+                    <button
+                      type="submit"
+                      className="btn btn--primary"
+                      disabled={savingPrefs}
+                    >
+                      {savingPrefs
+                        ? tp(locale, "saving")
+                        : tp(locale, "notifyPrefsSave")}
+                    </button>
+                  </div>
+
+                  {prefsNotice ? (
+                    <div
+                      role="status"
+                      className={`notice notice--${prefsNotice.tone}`}
+                    >
+                      {prefsNotice.text}
+                    </div>
+                  ) : null}
+                </form>
+              </section>
+            ) : null}
 
             {/* Telegram notifications */}
             <section className="panel" aria-labelledby="notify-heading">
@@ -941,6 +1152,13 @@ export function SettingsPage() {
                     onClick={() => handleTestNotify("evening")}
                   >
                     {tp(locale, "notifyTestEvening")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => handleTestNotify("connection")}
+                  >
+                    {tp(locale, "notifyTestConnection")}
                   </button>
                 </div>
 

@@ -51,21 +51,32 @@ var ErrPushDeliveryIneligible = errors.New("push delivery is no longer eligible"
 
 const pushTablesDDL = `
 CREATE TABLE IF NOT EXISTS push_devices (
-	device_id            UUID PRIMARY KEY,
-	binding_id           UUID NOT NULL UNIQUE,
-	apns_token           TEXT NOT NULL,
-	token_hash           BYTEA NOT NULL,
-	apns_env             TEXT NOT NULL CHECK (apns_env IN ('production','sandbox')),
-	bundle_id            TEXT NOT NULL,
-	locale               TEXT NOT NULL,
-	registration_version BIGINT NOT NULL DEFAULT 1,
-	enabled              BOOLEAN NOT NULL DEFAULT TRUE,
-	invalidated_at       TIMESTAMPTZ,
-	invalid_reason       TEXT NOT NULL DEFAULT '',
-	created_at           TIMESTAMPTZ NOT NULL,
-	updated_at           TIMESTAMPTZ NOT NULL,
-	last_seen_at         TIMESTAMPTZ NOT NULL
+	device_id              UUID PRIMARY KEY,
+	binding_id             UUID NOT NULL UNIQUE,
+	apns_token             TEXT NOT NULL,
+	token_hash             BYTEA NOT NULL,
+	apns_env               TEXT NOT NULL CHECK (apns_env IN ('production','sandbox')),
+	bundle_id              TEXT NOT NULL,
+	locale                 TEXT NOT NULL,
+	inbox_contract_version SMALLINT NOT NULL DEFAULT 1 CHECK (inbox_contract_version >= 1),
+	registration_version   BIGINT NOT NULL DEFAULT 1,
+	enabled                BOOLEAN NOT NULL DEFAULT TRUE,
+	invalidated_at         TIMESTAMPTZ,
+	invalid_reason         TEXT NOT NULL DEFAULT '',
+	created_at             TIMESTAMPTZ NOT NULL,
+	updated_at             TIMESTAMPTZ NOT NULL,
+	last_seen_at           TIMESTAMPTZ NOT NULL
 );
+ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS inbox_contract_version SMALLINT NOT NULL DEFAULT 1;
+DO $$
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+		 WHERE n.nspname = current_schema() AND t.relname = 'push_devices' AND c.conname = 'chk_push_devices_inbox_contract_version'
+	) THEN
+		ALTER TABLE push_devices ADD CONSTRAINT chk_push_devices_inbox_contract_version CHECK (inbox_contract_version >= 1);
+	END IF;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_push_devices_active_token
 	ON push_devices (token_hash, apns_env)
 	WHERE enabled AND invalidated_at IS NULL;
@@ -90,7 +101,7 @@ CREATE TABLE IF NOT EXISTS push_deliveries (
 	id                   UUID PRIMARY KEY,
 	delivery_key         TEXT NOT NULL UNIQUE,
 	inbox_item_id        UUID NOT NULL REFERENCES inbox_items(id),
-	kind                 TEXT NOT NULL CHECK (kind IN ('morning_report','prompt_checkin')),
+	kind                 TEXT NOT NULL,
 	device_id            UUID NOT NULL REFERENCES push_devices(device_id),
 	binding_id           UUID NOT NULL,
 	registration_version BIGINT NOT NULL,
@@ -110,6 +121,36 @@ CREATE TABLE IF NOT EXISTS push_deliveries (
 	created_at           TIMESTAMPTZ NOT NULL,
 	updated_at           TIMESTAMPTZ NOT NULL
 );
+DO $$
+DECLARE
+	con_name TEXT;
+BEGIN
+	FOR con_name IN
+		SELECT c.conname
+		  FROM pg_constraint c
+		  JOIN pg_class t ON t.oid = c.conrelid
+		  JOIN pg_namespace n ON n.oid = t.relnamespace
+		 WHERE n.nspname = current_schema()
+		   AND t.relname = 'push_deliveries'
+		   AND c.contype = 'c'
+		   AND pg_get_constraintdef(c.oid) LIKE '%kind%'
+		   AND c.conname <> 'chk_push_deliveries_kind'
+	LOOP
+		EXECUTE format('ALTER TABLE push_deliveries DROP CONSTRAINT IF EXISTS %I', con_name);
+	END LOOP;
+
+	IF NOT EXISTS (
+		SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+		 WHERE n.nspname = current_schema() AND t.relname = 'push_deliveries' AND c.conname = 'chk_push_deliveries_kind'
+	) THEN
+		ALTER TABLE push_deliveries ADD CONSTRAINT chk_push_deliveries_kind CHECK (
+			kind IN (
+				'morning_report','evening_report','sleep_update','guidance_change',
+				'weekly_digest','nudge','prompt_checkin','prompt_wake_feedback','prompt_context'
+			)
+		);
+	END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_push_deliveries_due
 	ON push_deliveries (next_attempt_at, id)
 	WHERE state IN ('pending','retry_wait');
@@ -194,23 +235,25 @@ type UpsertPushDeviceInput struct {
 	APNsEnv               string
 	BundleID              string
 	Locale                string
+	InboxContractVersion  int
 }
 
 type PushDevice struct {
-	DeviceID            uuid.UUID
-	BindingID           uuid.UUID
-	APNsToken           string
-	TokenHash           []byte
-	APNsEnv             string
-	BundleID            string
-	Locale              string
-	RegistrationVersion int64
-	Enabled             bool
-	InvalidatedAt       *time.Time
-	InvalidReason       string
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
-	LastSeenAt          time.Time
+	DeviceID             uuid.UUID
+	BindingID            uuid.UUID
+	APNsToken            string
+	TokenHash            []byte
+	APNsEnv              string
+	BundleID             string
+	Locale               string
+	InboxContractVersion int
+	RegistrationVersion  int64
+	Enabled              bool
+	InvalidatedAt        *time.Time
+	InvalidReason        string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	LastSeenAt           time.Time
 }
 
 // UpsertPushDevice registers or updates an iOS push installation inside the
@@ -233,6 +276,9 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 	}
 	if !ValidPushLocale(in.Locale) {
 		return PushDevice{}, errors.New("invalid locale")
+	}
+	if in.InboxContractVersion < InboxContractV1 {
+		in.InboxContractVersion = InboxContractV1
 	}
 	tokenHash := PushTokenHash(in.APNsToken)
 
@@ -275,15 +321,16 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 	var existingBinding uuid.UUID
 	var existingHash []byte
 	var existingEnv string
+	var existingContractVersion int
 	var existingVersion int64
 	var existingEnabled bool
 	var existingInvalidated *time.Time
 	err = tx.QueryRow(ctx, `
-		SELECT binding_id, token_hash, apns_env, registration_version, enabled, invalidated_at
+		SELECT binding_id, token_hash, apns_env, inbox_contract_version, registration_version, enabled, invalidated_at
 		  FROM push_devices
 		 WHERE device_id = $1
 		   FOR UPDATE`, in.DeviceID,
-	).Scan(&existingBinding, &existingHash, &existingEnv, &existingVersion, &existingEnabled, &existingInvalidated)
+	).Scan(&existingBinding, &existingHash, &existingEnv, &existingContractVersion, &existingVersion, &existingEnabled, &existingInvalidated)
 
 	var out PushDevice
 	switch {
@@ -292,30 +339,31 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 		err = tx.QueryRow(ctx, `
 			INSERT INTO push_devices (
 				device_id, binding_id, apns_token, token_hash, apns_env, bundle_id, locale,
-				registration_version, enabled, invalidated_at, invalid_reason,
+				inbox_contract_version, registration_version, enabled, invalidated_at, invalid_reason,
 				created_at, updated_at, last_seen_at
 			) VALUES (
 				$1, $2, $3, $4, $5, $6, $7,
-				1, TRUE, NULL, '',
+				$8, 1, TRUE, NULL, '',
 				clock_timestamp(), clock_timestamp(), clock_timestamp()
 			)
 			RETURNING device_id, binding_id, apns_token, token_hash, apns_env, bundle_id, locale,
-			          registration_version, enabled, invalidated_at, invalid_reason,
+			          inbox_contract_version, registration_version, enabled, invalidated_at, invalid_reason,
 			          created_at, updated_at, last_seen_at`,
-			in.DeviceID, bindingID, in.APNsToken, tokenHash, in.APNsEnv, in.BundleID, in.Locale,
+			in.DeviceID, bindingID, in.APNsToken, tokenHash, in.APNsEnv, in.BundleID, in.Locale, in.InboxContractVersion,
 		).Scan(
 			&out.DeviceID, &out.BindingID, &out.APNsToken, &out.TokenHash, &out.APNsEnv, &out.BundleID, &out.Locale,
-			&out.RegistrationVersion, &out.Enabled, &out.InvalidatedAt, &out.InvalidReason,
+			&out.InboxContractVersion, &out.RegistrationVersion, &out.Enabled, &out.InvalidatedAt, &out.InvalidReason,
 			&out.CreatedAt, &out.UpdatedAt, &out.LastSeenAt,
 		)
 	case err == nil:
 		bindingID := existingBinding
 		version := existingVersion
 		tokenChanged := !bytesEqual(existingHash, tokenHash) || existingEnv != in.APNsEnv
+		contractChanged := existingContractVersion != in.InboxContractVersion
 		if !existingEnabled || existingInvalidated != nil {
 			bindingID = uuid.New()
 			version++
-		} else if tokenChanged || in.RegistrationAttemptID != uuid.Nil {
+		} else if tokenChanged || contractChanged || in.RegistrationAttemptID != uuid.Nil {
 			version++
 		}
 		err = tx.QueryRow(ctx, `
@@ -326,7 +374,8 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 			       apns_env = $5,
 			       bundle_id = $6,
 			       locale = $7,
-			       registration_version = $8,
+			       inbox_contract_version = $8,
+			       registration_version = $9,
 			       enabled = TRUE,
 			       invalidated_at = NULL,
 			       invalid_reason = '',
@@ -334,12 +383,12 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 			       last_seen_at = clock_timestamp()
 			 WHERE device_id = $1
 			 RETURNING device_id, binding_id, apns_token, token_hash, apns_env, bundle_id, locale,
-			           registration_version, enabled, invalidated_at, invalid_reason,
+			           inbox_contract_version, registration_version, enabled, invalidated_at, invalid_reason,
 			           created_at, updated_at, last_seen_at`,
-			in.DeviceID, bindingID, in.APNsToken, tokenHash, in.APNsEnv, in.BundleID, in.Locale, version,
+			in.DeviceID, bindingID, in.APNsToken, tokenHash, in.APNsEnv, in.BundleID, in.Locale, in.InboxContractVersion, version,
 		).Scan(
 			&out.DeviceID, &out.BindingID, &out.APNsToken, &out.TokenHash, &out.APNsEnv, &out.BundleID, &out.Locale,
-			&out.RegistrationVersion, &out.Enabled, &out.InvalidatedAt, &out.InvalidReason,
+			&out.InboxContractVersion, &out.RegistrationVersion, &out.Enabled, &out.InvalidatedAt, &out.InvalidReason,
 			&out.CreatedAt, &out.UpdatedAt, &out.LastSeenAt,
 		)
 	default:
@@ -385,9 +434,26 @@ func (s *DB) DisablePushDeviceBinding(ctx context.Context, deviceID, bindingID u
 }
 
 func pushCollapseID(kind string, inboxItemID uuid.UUID) string {
-	prefix := "mr-"
-	if kind == InboxKindPromptCheckin {
+	prefix := "in-"
+	switch kind {
+	case InboxKindMorningReport:
+		prefix = "mr-"
+	case InboxKindEveningReport:
+		prefix = "er-"
+	case InboxKindSleepUpdate:
+		prefix = "su-"
+	case InboxKindGuidanceChange:
+		prefix = "gc-"
+	case InboxKindWeeklyDigest:
+		prefix = "wd-"
+	case InboxKindNudge:
+		prefix = "ng-"
+	case InboxKindPromptCheckin:
 		prefix = "ci-"
+	case InboxKindPromptWakeFeedback:
+		prefix = "wf-"
+	case InboxKindPromptContext:
+		prefix = "cx-"
 	}
 	return prefix + inboxItemID.String()
 }
@@ -397,19 +463,25 @@ func pushDeliveryKey(kind string, inboxItemID, deviceID uuid.UUID) string {
 }
 
 // enqueuePushDeliveriesTx atomically inserts pending push_deliveries rows for
-// all currently active, non-stale devices of this tenant inside the card
-// creation transaction. Backfilling on later ticks is intentionally forbidden.
+// all currently active, non-stale devices of this tenant that support the
+// required Inbox contract version, respecting the category's push preference.
+// Backfilling on later ticks is intentionally forbidden.
 func enqueuePushDeliveriesTx(ctx context.Context, tx pgx.Tx, inboxItemID uuid.UUID, kind string, expiresAt time.Time) error {
-	if inboxItemID == uuid.Nil || (kind != InboxKindMorningReport && kind != InboxKindPromptCheckin) {
+	if inboxItemID == uuid.Nil || !IsValidInboxKind(kind) {
 		return errors.New("invalid push delivery event")
 	}
+	if !pushPrefEnabledTx(ctx, tx, kind) {
+		return nil
+	}
+	minContract := RequiredInboxContractVersion(kind)
 	rows, err := tx.Query(ctx, `
 		SELECT device_id, binding_id, registration_version, token_hash, apns_env, locale
 		  FROM push_devices
 		 WHERE enabled
 		   AND invalidated_at IS NULL
+		   AND inbox_contract_version >= $1
 		   AND last_seen_at > clock_timestamp() - INTERVAL '180 days'
-		 ORDER BY device_id`)
+		 ORDER BY device_id`, minContract)
 	if err != nil {
 		return err
 	}
@@ -604,16 +676,20 @@ type ClaimedPushDelivery struct {
 	ExpiresAt           time.Time
 
 	// Current device state loaded alongside claim for freshness validation.
-	DeviceAPNsToken           string
-	DeviceEnabled             bool
-	DeviceInvalidatedAt       *time.Time
-	DeviceBindingID           uuid.UUID
-	DeviceRegistrationVersion int64
-	DeviceTokenHash           []byte
+	DeviceAPNsToken            string
+	DeviceEnabled              bool
+	DeviceInvalidatedAt        *time.Time
+	DeviceBindingID            uuid.UUID
+	DeviceRegistrationVersion  int64
+	DeviceTokenHash            []byte
+	DeviceInboxContractVersion int
 
-	// Canonical check-in state (populated for prompt_checkin).
-	CheckinStatus    string
-	CheckinExpiresAt *time.Time
+	// Canonical prompt state (populated for interactive prompt kinds).
+	CheckinStatus        string
+	CheckinExpiresAt     *time.Time
+	WakeFeedbackResponse string
+	ContextPromptStatus  string
+	ContextExpiresAt     *time.Time
 }
 
 // ClaimNextPushDelivery claims one due push_deliveries row with a 45s lease.
@@ -666,21 +742,33 @@ func (s *DB) ClaimNextPushDelivery(ctx context.Context) (*ClaimedPushDelivery, e
 	if err = tx.QueryRow(ctx, `
 		SELECT i.local_date,
 		       dev.apns_token, dev.enabled, dev.invalidated_at, dev.binding_id,
-		       dev.registration_version, dev.token_hash,
-		       COALESCE(sc.status, ''), sc.expires_at
+		       dev.registration_version, dev.token_hash, dev.inbox_contract_version,
+		       COALESCE(sc.status, ''), sc.expires_at,
+		       COALESCE(df.response, ''),
+		       COALESCE(cp.status, ''), cp.expires_at
 		  FROM inbox_items i
 		  JOIN push_devices dev ON dev.device_id = $2
 		  LEFT JOIN subjective_checkins sc
 		         ON i.kind = 'prompt_checkin'
 		        AND sc.date = i.checkin_date
 		        AND sc.source = i.checkin_source
+		  LEFT JOIN derived_metric_feedback df
+		         ON i.kind = 'prompt_wake_feedback'
+		        AND df.metric_name = i.feedback_metric
+		        AND df.metric_date = i.feedback_date
+		        AND df.channel = i.feedback_channel
+		  LEFT JOIN context_prompt_interactions cp
+		         ON i.kind = 'prompt_context'
+		        AND cp.prompt_id = i.context_prompt_id
 		 WHERE i.id = $1`,
 		d.InboxItemID, d.DeviceID,
 	).Scan(
 		&d.LocalDate,
 		&d.DeviceAPNsToken, &d.DeviceEnabled, &d.DeviceInvalidatedAt, &d.DeviceBindingID,
-		&d.DeviceRegistrationVersion, &d.DeviceTokenHash,
+		&d.DeviceRegistrationVersion, &d.DeviceTokenHash, &d.DeviceInboxContractVersion,
 		&d.CheckinStatus, &d.CheckinExpiresAt,
+		&d.WakeFeedbackResponse,
+		&d.ContextPromptStatus, &d.ContextExpiresAt,
 	); err != nil {
 		return nil, err
 	}
@@ -718,12 +806,30 @@ func (s *DB) StartPushDeliveryAttempt(ctx context.Context, deliveryID, leaseToke
 		            AND d.registration_version = p.registration_version
 		            AND d.token_hash = p.token_hash
 		            AND d.apns_env = p.apns_env
+		            AND d.inbox_contract_version >= CASE
+		                  WHEN p.kind IN ('morning_report','prompt_checkin') THEN 1
+		                  ELSE 2
+		                END
 		       )
 		   AND (p.kind <> 'prompt_checkin' OR EXISTS (
 		         SELECT 1 FROM inbox_items i
 		         JOIN subjective_checkins c ON c.date = i.checkin_date AND c.source = i.checkin_source
 		          WHERE i.id = p.inbox_item_id AND c.status = 'prompted'
 		            AND c.expires_at > clock_timestamp()
+		       ))
+		   AND (p.kind <> 'prompt_wake_feedback' OR EXISTS (
+		         SELECT 1 FROM inbox_items i
+		         JOIN derived_metric_feedback df
+		           ON df.metric_name = i.feedback_metric
+		          AND df.metric_date = i.feedback_date
+		          AND df.channel = i.feedback_channel
+		          WHERE i.id = p.inbox_item_id AND df.response IS NULL
+		       ))
+		   AND (p.kind <> 'prompt_context' OR EXISTS (
+		         SELECT 1 FROM inbox_items i
+		         JOIN context_prompt_interactions cp ON cp.prompt_id = i.context_prompt_id
+		          WHERE i.id = p.inbox_item_id AND cp.status = 'prompted'
+		            AND cp.expires_at > clock_timestamp()
 		       ))`,
 		deliveryID, leaseToken,
 	).Scan(&eligible)
@@ -867,7 +973,7 @@ func (s *DB) CompletePushDelivery(ctx context.Context, in CompletePushDeliveryIn
 func (s *DB) ListPushDevices(ctx context.Context) ([]PushDevice, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT device_id, binding_id, apns_token, token_hash, apns_env, bundle_id, locale,
-		       registration_version, enabled, invalidated_at, invalid_reason,
+		       inbox_contract_version, registration_version, enabled, invalidated_at, invalid_reason,
 		       created_at, updated_at, last_seen_at
 		  FROM push_devices
 		 ORDER BY created_at, device_id`)
@@ -880,7 +986,7 @@ func (s *DB) ListPushDevices(ctx context.Context) ([]PushDevice, error) {
 		var d PushDevice
 		if err := rows.Scan(
 			&d.DeviceID, &d.BindingID, &d.APNsToken, &d.TokenHash, &d.APNsEnv, &d.BundleID, &d.Locale,
-			&d.RegistrationVersion, &d.Enabled, &d.InvalidatedAt, &d.InvalidReason,
+			&d.InboxContractVersion, &d.RegistrationVersion, &d.Enabled, &d.InvalidatedAt, &d.InvalidReason,
 			&d.CreatedAt, &d.UpdatedAt, &d.LastSeenAt,
 		); err != nil {
 			return nil, err
@@ -888,6 +994,19 @@ func (s *DB) ListPushDevices(ctx context.Context) ([]PushDevice, error) {
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// CountActivePushDevices returns the number of enabled, non-invalidated, non-stale
+// APNs devices registered for this tenant.
+func (s *DB) CountActivePushDevices(ctx context.Context) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*)
+		  FROM push_devices
+		 WHERE enabled
+		   AND invalidated_at IS NULL
+		   AND last_seen_at > clock_timestamp() - INTERVAL '180 days'`).Scan(&count)
+	return count, err
 }
 
 func bytesEqual(a, b []byte) bool {
