@@ -31,7 +31,6 @@ const (
 
 	maxRelayRequestBytes    = 32 * 1024 // App Attest CBOR attestationObject can be ~4-16 KiB
 	maxDeliveryRequestBytes = 1024
-	maxDeliveryTTL          = 24 * time.Hour
 )
 
 type Server struct {
@@ -626,7 +625,7 @@ func (s *Server) handleDeliver(w http.ResponseWriter, r *http.Request) {
 	}
 	now := s.currentTime()
 	exp := time.Unix(req.ExpiresAt, 0).UTC()
-	if !exp.After(now) || exp.After(now.Add(maxDeliveryTTL)) {
+	if !exp.After(now) || exp.After(now.Add(apnspush.MaxRelayDeliveryTTL)) {
 		s.incDeliveryMetric(app.AppID, "invalid", OutcomeRejected)
 		writeJSON(w, http.StatusBadRequest, DeliveryResponse{Status: http.StatusBadRequest, Outcome: OutcomeRejected, Reason: "invalid_expires_at"})
 		return

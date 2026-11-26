@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+const MaxRelayDeliveryTTL = 24 * time.Hour
+
 const (
 	TransportModeDirect = "direct"
 	TransportModeRelay  = "relay"
@@ -215,6 +217,9 @@ func (c *RelayClient) SendRelay(ctx context.Context, req RelayDeliveryRequest) (
 	if c == nil || strings.TrimSpace(c.RelayURL) == "" || strings.TrimSpace(req.GrantSecret) == "" {
 		return out, errors.New("relay client or grant secret unavailable")
 	}
+	// The Inbox item can outlive its notification. Cap only the delivery sent
+	// over the relay protocol; retain the item's original response deadline.
+	req.ExpiresAt = min(req.ExpiresAt, time.Now().Add(MaxRelayDeliveryTTL).Unix())
 	body, err := json.Marshal(req)
 	if err != nil {
 		return out, err

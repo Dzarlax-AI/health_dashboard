@@ -180,3 +180,31 @@ func TestClassifyRelayOutcomeMatrix(t *testing.T) {
 		t.Fatalf("rejected outcome mismatch: %+v", rej)
 	}
 }
+
+func TestRelayClientCapsContextPromptPushTTL(t *testing.T) {
+	client, err := NewRelayClient("https://push.dzarlax.dev", DefaultTopic, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	client.Client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var delivery RelayDeliveryRequest
+		if err := json.NewDecoder(r.Body).Decode(&delivery); err != nil {
+			t.Fatal(err)
+		}
+		if delivery.Kind != storage.InboxKindPromptContext ||
+			delivery.ExpiresAt < now.Add(24*time.Hour).Unix() ||
+			delivery.ExpiresAt > time.Now().Add(24*time.Hour).Unix() {
+			t.Fatalf("context prompt delivery not capped to 24 hours: %+v", delivery)
+		}
+		rec := httptest.NewRecorder()
+		_ = json.NewEncoder(rec).Encode(RelayDeliveryResult{Status: http.StatusOK, Outcome: RelayOutcomeAccepted})
+		return rec.Result(), nil
+	})
+	if _, err := client.SendRelay(context.Background(), RelayDeliveryRequest{
+		GrantSecret: "test-context-delivery-secret", Kind: storage.InboxKindPromptContext,
+		ExpiresAt: now.Add(36 * time.Hour).Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
