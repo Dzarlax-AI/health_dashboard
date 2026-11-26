@@ -27,6 +27,13 @@ export type PendingCheckinPrompt = NonNullable<InboxPendingResponse["prompts"]>[
 export type InboxPromptOption = NonNullable<PendingCheckinPrompt["options"]>[number];
 export type PromptAnswerRequest = components["schemas"]["PromptAnswerRequest"];
 export type PromptAnswerResponse = components["schemas"]["PromptAnswerResponse"];
+export type InboxReadResponse = components["schemas"]["InboxReadResponse"];
+export type InboxReadAllRequest = components["schemas"]["InboxReadAllRequest"];
+export type InboxReadAllResponse = components["schemas"]["InboxReadAllResponse"];
+export type NotificationPreferencesResponse =
+  components["schemas"]["NotificationPreferencesResponse"];
+export type NotificationPreferencesRequest =
+  components["schemas"]["NotificationPreferencesRequest"];
 
 export type SleepDurationComparison = NonNullable<components["schemas"]["SleepDurationComparisonResponse"]["comparison"]>;
 
@@ -268,13 +275,26 @@ export async function putSleepGoal(
   return requireData(data, error, response);
 }
 
+const INBOX_CONTRACT_HEADERS = {
+  "X-Health-Inbox-Contract": "2",
+} as const;
+
 export async function getInbox(
   locale: Locale,
-  options: { limit?: number; cursor?: string } = {},
+  options: { limit?: number; cursor?: string; filter?: "all" | "unread"; kind?: string } = {},
   signal?: AbortSignal,
 ): Promise<InboxFeedResponse> {
   const { data, error, response } = await client.GET("/api/inbox", {
-    params: { query: { lang: locale, limit: options.limit, cursor: options.cursor } },
+    headers: INBOX_CONTRACT_HEADERS,
+    params: {
+      query: {
+        lang: locale,
+        limit: options.limit,
+        cursor: options.cursor,
+        filter: options.filter,
+        kind: options.kind,
+      },
+    },
     signal,
   });
   return requireData(data, error, response);
@@ -285,6 +305,7 @@ export async function getPendingInboxPrompts(
   signal?: AbortSignal,
 ): Promise<InboxPendingResponse> {
   const { data, error, response } = await client.GET("/api/inbox/pending", {
+    headers: INBOX_CONTRACT_HEADERS,
     params: { query: { lang: locale } },
     signal,
   });
@@ -297,6 +318,7 @@ export async function getInboxItem(
   signal?: AbortSignal,
 ): Promise<InboxDetailResponse> {
   const { data, error, response } = await client.GET("/api/inbox/{id}", {
+    headers: INBOX_CONTRACT_HEADERS,
     params: { path: { id }, query: { lang: locale } },
     signal,
   });
@@ -309,7 +331,52 @@ export async function answerInboxPrompt(
   signal?: AbortSignal,
 ): Promise<PromptAnswerResponse> {
   const { data, error, response } = await client.POST("/api/prompts/{prompt_id}/answer", {
+    headers: INBOX_CONTRACT_HEADERS,
     params: { path: { prompt_id: promptId } },
+    body,
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function markInboxItemRead(
+  id: string,
+  signal?: AbortSignal,
+): Promise<InboxReadResponse> {
+  const { data, error, response } = await client.POST("/api/inbox/{id}/read", {
+    headers: INBOX_CONTRACT_HEADERS,
+    params: { path: { id } },
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function markAllInboxRead(
+  body: InboxReadAllRequest = {},
+  signal?: AbortSignal,
+): Promise<InboxReadAllResponse> {
+  const { data, error, response } = await client.POST("/api/inbox/read-all", {
+    headers: INBOX_CONTRACT_HEADERS,
+    body,
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function getNotificationPreferences(
+  signal?: AbortSignal,
+): Promise<NotificationPreferencesResponse> {
+  const { data, error, response } = await client.GET("/api/notifications/preferences", {
+    signal,
+  });
+  return requireData(data, error, response);
+}
+
+export async function putNotificationPreferences(
+  body: NotificationPreferencesRequest,
+  signal?: AbortSignal,
+): Promise<NotificationPreferencesResponse> {
+  const { data, error, response } = await client.PUT("/api/notifications/preferences", {
     body,
     signal,
   });

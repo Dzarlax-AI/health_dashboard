@@ -4,6 +4,7 @@ import {
   answerInboxPrompt,
   ClientApiError,
   type PendingCheckinPrompt,
+  type PromptAnswerRequest,
   type PromptAnswerResponse,
 } from "../../api/client";
 import { translate, type Locale } from "../../i18n";
@@ -13,6 +14,20 @@ interface PendingCheckinCardProps {
   prompts: PendingCheckinPrompt[];
   onAnswered?: (promptId: string, response: PromptAnswerResponse) => void;
   onExpired?: (promptId: string) => void;
+}
+
+function eyebrowForPromptKind(
+  locale: Locale,
+  kind?: PendingCheckinPrompt["kind"],
+): string {
+  switch (kind) {
+    case "prompt_wake_feedback":
+      return translate(locale, "inboxKindWakeFeedback");
+    case "prompt_context":
+      return translate(locale, "inboxKindContext");
+    default:
+      return translate(locale, "checkin");
+  }
 }
 
 type CardSubmissionState =
@@ -75,7 +90,7 @@ export function PendingCheckinCard({
     });
     try {
       const response = await answerInboxPrompt(activePrompt.prompt_id, {
-        answer: optionId as "great" | "ok" | "meh" | "sick",
+        answer: optionId as PromptAnswerRequest["answer"],
         channel: "web",
       });
       const canonicalOption = (activePrompt.options ?? []).find(
@@ -110,7 +125,9 @@ export function PendingCheckinCard({
   return (
     <section className="inbox-prompt-card" aria-label={activePrompt.title}>
       <div className="inbox-prompt-card__header">
-        <p className="inbox-prompt-card__eyebrow">{translate(locale, "checkin")}</p>
+        <p className="inbox-prompt-card__eyebrow">
+          {eyebrowForPromptKind(locale, activePrompt.kind)}
+        </p>
         <span className="inbox-prompt-card__date">{activePrompt.local_date}</span>
       </div>
       <h2 className="inbox-prompt-card__title">{activePrompt.title}</h2>

@@ -72,6 +72,14 @@ func (h *Handler) pushDeviceRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	contractVer := storage.InboxContractV1
+	if req.InboxContractVersion != nil {
+		if *req.InboxContractVersion < storage.InboxContractV1 || *req.InboxContractVersion > storage.InboxContractV2 {
+			jsonError(w, "invalid inbox_contract_version", http.StatusBadRequest)
+			return
+		}
+		contractVer = *req.InboxContractVersion
+	}
 	dev, err := db.UpsertPushDevice(r.Context(), storage.UpsertPushDeviceInput{
 		RegistrationAttemptID: attemptID,
 		DeviceID:              deviceID,
@@ -79,17 +87,23 @@ func (h *Handler) pushDeviceRegister(w http.ResponseWriter, r *http.Request) {
 		APNsEnv:               req.APNsEnv,
 		BundleID:              req.BundleID,
 		Locale:                req.Locale,
+		InboxContractVersion:  contractVer,
 	})
 	if err != nil {
 		writePushDeviceError(w, err, "failed to save push device")
 		return
 	}
+	respContractVer := dev.InboxContractVersion
+	if respContractVer < storage.InboxContractV1 {
+		respContractVer = contractVer
+	}
 	jsonResponse(w, clientapi.PushDeviceRegisterResponse{
-		DeviceID:            dev.DeviceID,
-		BindingID:           dev.BindingID,
-		Enabled:             dev.Enabled,
-		RegistrationVersion: dev.RegistrationVersion,
-		APNsEnv:             dev.APNsEnv,
+		DeviceID:             dev.DeviceID,
+		BindingID:            dev.BindingID,
+		Enabled:              dev.Enabled,
+		RegistrationVersion:  dev.RegistrationVersion,
+		APNsEnv:              dev.APNsEnv,
+		InboxContractVersion: &respContractVer,
 	})
 }
 

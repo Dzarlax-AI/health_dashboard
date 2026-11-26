@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,7 +44,11 @@ func pushRegistrationAttemptTime(id uuid.UUID, now time.Time) (time.Time, error)
 }
 
 func pushRegistrationRequestHash(in UpsertPushDeviceInput) [sha256.Size]byte {
-	return sha256.Sum256([]byte(strings.Join([]string{in.APNsToken, in.APNsEnv, in.BundleID, in.Locale}, "\x00")))
+	contractVer := in.InboxContractVersion
+	if contractVer < InboxContractV1 {
+		contractVer = InboxContractV1
+	}
+	return sha256.Sum256([]byte(strings.Join([]string{in.APNsToken, in.APNsEnv, in.BundleID, in.Locale, strconv.Itoa(contractVer)}, "\x00")))
 }
 
 func replayPushRegistration(ctx context.Context, tx pgx.Tx, in UpsertPushDeviceInput, requestHash []byte) (PushDevice, bool, error) {

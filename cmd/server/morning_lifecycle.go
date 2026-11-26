@@ -173,11 +173,11 @@ func runTenantCheckinCycle(db *storage.DB, mgr *tenants.Manager, reg *registry.R
 			return
 		}
 	}
-	if !telegramEnabled || !db.HasSentMorningReport(today) {
+	if (!inboxEnabled && !telegramEnabled) || (!db.HasSentMorningReport(today) && !db.HasPublishedMorningInboxReport(today)) {
 		return
 	}
-	if !trySendWakeFeedbackAfterMorning(bot, db, cfg, today, now, telegramWebhookReady) {
-		trySendContextPromptAfterMorning(bot, db, cfg, today, now)
+	if !trySendWakeFeedbackAfterMorning(bot, db, cfg, today, now, inboxEnabled, telegramEnabled && telegramWebhookReady) {
+		trySendContextPromptAfterMorning(bot, db, cfg, today, now, inboxEnabled, telegramEnabled && telegramWebhookReady)
 	}
 }
 

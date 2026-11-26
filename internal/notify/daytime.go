@@ -123,7 +123,8 @@ func MaybeFireDaytime(ctx context.Context, bot *Bot, db *storage.DB, cfg Config,
 	maybeFireDaytime(ctx, bot, db, cfg, baseURL, now, func() (*health.BriefingResponse, error) { return db.GetHealthBriefing(cfg.Lang) })
 }
 func maybeFireDaytime(ctx context.Context, bot *Bot, db *storage.DB, cfg Config, baseURL string, now time.Time, loadBriefing func() (*health.BriefingResponse, error)) {
-	if !cfg.DaytimeEnabled || !cfg.Enabled() || !daytimeWindow(now, cfg.location(), cfg.DaytimeStartHour, cfg.DaytimeEndHour) {
+	inboxEnabled := storage.IsInAppInboxEnabled(db)
+	if !cfg.DaytimeEnabled || (!inboxEnabled && !cfg.Enabled()) || !daytimeWindow(now, cfg.location(), cfg.DaytimeStartHour, cfg.DaytimeEndHour) {
 		return
 	}
 	if maybeFireSleepAnalysisUpdate(ctx, bot, db, cfg, baseURL, now, loadBriefing) {
@@ -175,6 +176,14 @@ func maybeFireDaytime(ctx context.Context, bot *Bot, db *storage.DB, cfg Config,
 	msg := formatDaytimeGuidance(current, cfg, baseURL, now)
 	snapshot, _ := json.Marshal(map[string]any{"date": now.In(cfg.location()).Format("2006-01-02"), "sleep_date": current.sleep.WakeDate, "sleep_finalized_at": current.sleep.FinalizedAt, "decision": current.decision})
 	h := storage.ReportHistory{Kind: "proactive", LocalDate: now.In(cfg.location()).Format("2006-01-02"), Timezone: cfg.location().String(), Language: cfg.Lang, PlainBody: msg, DecisionID: current.decision.ID, Context: snapshot, FallbackReason: "deterministic_daytime"}
+	if storage.IsInAppInboxEnabled(db) {
+		inboxID, _, err := db.PublishProactiveToInbox(ctx, &h, "", "proactive:daytime:pending", &current.event, now, cfg.location(), storage.InboxKindGuidanceChange, 8*time.Hour)
+		if err != nil || inboxID == (storage.ReportHistory{}.ID) {
+			return
+		}
+		_, _ = DeliverArchivedReportToTelegram(db, bot, cfg, &h)
+		return
+	}
 	token, reserved, err := db.ReserveProactive(ctx, &h, "proactive:daytime:pending", &current.event, now, cfg.location())
 	if err != nil || !reserved {
 		return

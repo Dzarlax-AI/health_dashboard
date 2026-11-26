@@ -48,6 +48,11 @@ func GenerateOpenAPI() ([]byte, error) {
 		"InboxFeedResponse":               InboxFeedResponse{},
 		"InboxDetailResponse":             InboxDetailResponse{},
 		"InboxPendingResponse":            InboxPendingResponse{},
+		"InboxReadResponse":               InboxReadResponse{},
+		"InboxReadAllRequest":             InboxReadAllRequest{},
+		"InboxReadAllResponse":            InboxReadAllResponse{},
+		"NotificationPreferencesResponse": NotificationPreferencesResponse{},
+		"NotificationPreferencesRequest":  NotificationPreferencesRequest{},
 		"PromptAnswerRequest":             PromptAnswerRequest{},
 		"PromptAnswerResponse":            PromptAnswerResponse{},
 		"PromptExpiredResponse":           PromptExpiredResponse{},
@@ -249,34 +254,90 @@ func clientPaths() map[string]any {
 	todayInsightsOperation["responses"].(map[string]any)["503"] = plainTextResponse(
 		"Current-day source data is not available yet.",
 	)
+	inboxContractParam := map[string]any{
+		"name":        "X-Health-Inbox-Contract",
+		"in":          "header",
+		"required":    false,
+		"description": "Optional Inbox contract version. Omit or send 1 for v1 clients (morning_report + prompt_checkin only); send 2 for all communication scenarios, unread_count, and snapshot_at.",
+		"schema":      map[string]any{"type": "string", "enum": []any{"1", "2"}},
+	}
 	inboxListOperation := getOperation(
 		"listInbox",
-		"Chronological feed of morning reports and morning check-in prompts",
+		"Chronological feed of Inbox reports, updates, digests, nudges, and interactive prompts",
 		[]any{
+			inboxContractParam,
 			langParameter(),
 			integerQueryParameter("limit", 20, 1, 100),
 			plainStringQueryParameter("cursor", "Opaque continuation cursor ordered by (created_at, id)."),
+			optionalEnumQuery("filter", "Optional read filter for contract v2 clients.", "all", "unread"),
+			plainStringQueryParameter("kind", "Optional Inbox item kind filter for contract v2 clients."),
 		},
 		jsonResponseRef("InboxFeedResponse"),
 	)
 	inboxListOperation["responses"].(map[string]any)["404"] = plainTextResponse("In-app Inbox is disabled for this profile.")
 	inboxPendingOperation := getOperation(
 		"listPendingInboxPrompts",
-		"Active unanswered morning check-in prompts for today",
-		[]any{langParameter()},
+		"Active unanswered interactive prompts for today (and unread_count in contract v2)",
+		[]any{inboxContractParam, langParameter()},
 		jsonResponseRef("InboxPendingResponse"),
 	)
 	inboxPendingOperation["responses"].(map[string]any)["404"] = plainTextResponse("In-app Inbox is disabled for this profile.")
 	inboxItemOperation := getOperation(
 		"getInboxItem",
-		"Inbox item detail with normalized report text or canonical check-in state",
+		"Inbox item detail with normalized report text or canonical interactive prompt state",
 		[]any{
+			inboxContractParam,
 			map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string", "format": "uuid"}},
 			langParameter(),
 		},
 		jsonResponseRef("InboxDetailResponse"),
 	)
 	inboxItemOperation["responses"].(map[string]any)["404"] = plainTextResponse("In-app Inbox is disabled for this profile, or the requested item was not found.")
+	inboxMarkReadOperation := map[string]any{
+		"operationId": "markInboxItemRead",
+		"summary":     "Idempotently mark an Inbox item as read and return updated unread_count",
+		"parameters": []any{
+			inboxContractParam,
+			map[string]any{"name": "id", "in": "path", "required": true, "schema": map[string]any{"type": "string", "format": "uuid"}},
+		},
+		"responses": map[string]any{
+			"200": jsonResponseRef("InboxReadResponse"),
+			"401": plainTextResponse("Authentication is required."),
+			"404": plainTextResponse("In-app Inbox is disabled for this profile, or the requested item was not found."),
+		},
+	}
+	inboxReadAllOperation := map[string]any{
+		"operationId": "markAllInboxRead",
+		"summary":     "Mark all unread Inbox items created at or before the snapshot watermark as read",
+		"parameters":  []any{inboxContractParam},
+		"requestBody": map[string]any{
+			"required": false,
+			"content": map[string]any{
+				"application/json": map[string]any{
+					"schema": schemaRef("InboxReadAllRequest"),
+				},
+			},
+		},
+		"responses": map[string]any{
+			"200": jsonResponseRef("InboxReadAllResponse"),
+			"400": jsonErrorResponse("Invalid JSON body."),
+			"401": plainTextResponse("Authentication is required."),
+			"404": plainTextResponse("In-app Inbox is disabled for this profile."),
+		},
+	}
+	notifPrefsGetOperation := getOperation(
+		"getNotificationPreferences",
+		"Per-profile notification schedule, APNs push category preferences, and Telegram opt-out state",
+		nil,
+		jsonResponseRef("NotificationPreferencesResponse"),
+	)
+	notifPrefsPutOperation := putOperation(
+		"putNotificationPreferences",
+		"Update per-profile notification schedule, APNs push category preferences, or Telegram opt-out state",
+		"NotificationPreferencesRequest",
+		jsonResponseRef("NotificationPreferencesResponse"),
+	)
+	notifPrefsPutOperation["responses"].(map[string]any)["400"] = jsonErrorResponse("Invalid notification preference values.")
 	sleepBalanceOperation := getOperation(
 		"getSleepDurationBalance",
 		"Transparent fourteen-period sleep-duration accounting relative to a manual goal",
@@ -367,11 +428,21 @@ func clientPaths() map[string]any {
 		"/api/inbox/pending": map[string]any{
 			"get": inboxPendingOperation,
 		},
+		"/api/inbox/read-all": map[string]any{
+			"post": inboxReadAllOperation,
+		},
 		"/api/inbox/{id}": map[string]any{
 			"get": inboxItemOperation,
 		},
+		"/api/inbox/{id}/read": map[string]any{
+			"post": inboxMarkReadOperation,
+		},
 		"/api/prompts/{prompt_id}/answer": map[string]any{
 			"post": promptAnswerOperation(),
+		},
+		"/api/notifications/preferences": map[string]any{
+			"get": notifPrefsGetOperation,
+			"put": notifPrefsPutOperation,
 		},
 		"/api/push/devices": map[string]any{
 			"post": pushDeviceRegisterOperation(),

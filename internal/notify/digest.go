@@ -17,8 +17,11 @@ import (
 // path lives in weeklyDigestRender (registered with the proactive framework
 // in init() below) — only the forced admin button calls in here directly.
 func SendWeeklyDigestForce(bot *Bot, db *storage.DB, cfg Config, days int) error {
-	if !cfg.Enabled() {
+	if !cfg.HasTelegramCredentials() {
 		return fmt.Errorf("Telegram not configured")
+	}
+	if cfg.TelegramDisabled || !storage.IsTelegramNotificationsEnabled(db) {
+		return ErrTelegramNotificationsDisabled
 	}
 	stats, err := db.WeeklyQualityReport(days)
 	if err != nil {

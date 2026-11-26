@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -924,6 +925,7 @@ func buildNotifyCfg(db *storage.DB, c storage.NotifyConfig) notify.Config {
 		EveningWeekdayHour:   c.EveningWeekdayHour,
 		EveningWeekendHour:   c.EveningWeekendHour,
 		TelegramRichMessages: c.TelegramRichMessages,
+		TelegramDisabled:     c.TelegramDisabled,
 		DaytimeEnabled:       c.DaytimeEnabled,
 		DaytimeStartHour:     c.DaytimeStartHour,
 		DaytimeEndHour:       c.DaytimeEndHour,
@@ -946,8 +948,18 @@ func buildNotifyCfg(db *storage.DB, c storage.NotifyConfig) notify.Config {
 func makeTestNotifyFn(db *storage.DB, mgr *tenants.Manager, schema string, notifyDefaults storage.NotifyConfig) func(string) error {
 	return func(kind string) error {
 		scfg := db.GetNotifyConfig(notifyDefaults)
-		if !scfg.Enabled() {
+		if !scfg.HasTelegramCredentials() {
 			return fmt.Errorf("Telegram not configured: set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID")
+		}
+		if kind == "connection" {
+			// Explicit "Test Telegram connection" exception: allowed even when
+			// telegram_notifications_enabled=false so operators can verify bot
+			// credentials before re-enabling Telegram notifications.
+			bot := notify.NewBot(scfg.Token, scfg.ChatID)
+			return bot.Send("Health Sync: Telegram connection test OK.")
+		}
+		if !scfg.Enabled() {
+			return notify.ErrTelegramNotificationsDisabled
 		}
 		ncfg := buildNotifyCfg(db, scfg)
 		bot := notify.NewBot(ncfg.Token, ncfg.ChatID)
@@ -1094,14 +1106,13 @@ func (r *liveCheckinRouter) SaveContextPromptAnswer(promptID, category, source s
 	return r.db.SaveContextPromptAnswer(promptID, category, source, answeredAt)
 }
 func (r *liveCheckinRouter) SaveWakeFeedbackAnswer(date, response string, answeredAt time.Time) (string, error) {
-	return r.db.SaveDerivedMetricFeedbackAnswer(
-		storage.DerivedMetricWakeTime,
-		date,
-		storage.DerivedMetricFeedbackTelegram,
-		response,
-		nil,
-		answeredAt,
-	)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := r.db.AnswerWakeFeedbackByDate(ctx, date, r.todayInTZ, storage.CheckinChannelTelegram, response, answeredAt)
+	if err != nil {
+		return "", err
+	}
+	return res.Response, nil
 }
 func (r *liveCheckinRouter) AnswerCallbackQuery(qid, text string) error {
 	return r.bot.AnswerCallbackQuery(qid, text)
@@ -1360,9 +1371,12 @@ schedulerLoop:
 		}
 		if isMorning {
 			runMorningSmartRetry(ctx, bot, db, mgr, reg, schema, ncfg, baseURL, apnsSender)
-		} else if cfg.Enabled() {
+		} else if inboxEnabled || cfg.Enabled() {
 			log.Println("report scheduler: sending evening report…")
 			if err := retryEveningSnapshotUnavailable(ctx, next, reportTimezone(ncfg), time.Now, waitForContext, func() error {
+				if inboxEnabled {
+					return notify.PublishEveningToInboxAndTelegram(ctx, bot, db, ncfg)
+				}
 				return notify.SendEvening(bot, db, ncfg)
 			}); err != nil {
 				log.Printf("report scheduler: evening send error: %v", err)
@@ -1444,13 +1458,49 @@ func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, 
 	// The independent minute loop owns retries and reminders even after this
 	// scheduled invocation returns or the daily report has already been sent.
 	makeMorningTrigger(ctx, db, mgr.MorningSendMuFor(schema), mgr, reg, schema, mgr.NotifyDefaultsFor(schema), apnsSender)()
-	if bot != nil && ncfg.Enabled() {
+	if storage.IsInAppInboxEnabled(db) || (bot != nil && ncfg.Enabled()) {
 		notify.MaybeFireAll(bot, db, ncfg, baseURL)
 	}
 }
 
-func trySendWakeFeedbackAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, date string, now time.Time, webhookAvailable bool) bool {
-	if !webhookAvailable || !storage.IsWakeFeedbackEnabled(db) {
+func trySendWakeFeedbackAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, date string, now time.Time, inboxEnabled, telegramAvailable bool) bool {
+	if db == nil || !storage.IsWakeFeedbackEnabled(db) {
+		return false
+	}
+	if inboxEnabled {
+		metric, err := db.GetDerivedMetric(storage.DerivedMetricWakeTime, date)
+		if err != nil || metric == nil || metric.ValueTimestamp == nil {
+			return false
+		}
+		var meta struct {
+			Confidence string `json:"confidence"`
+		}
+		_ = json.Unmarshal(metric.Metadata, &meta)
+		if meta.Confidence == storage.WakeConfidenceHigh {
+			recent, err := db.HasRecentDerivedMetricFeedback(storage.DerivedMetricWakeTime, "", date, 7)
+			if err != nil || recent {
+				return false
+			}
+		}
+		proposed, _ := json.Marshal(metric.ValueTimestamp.Format(time.RFC3339))
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, fb, created, err := db.EnsureCanonicalWakeFeedbackPrompt(ctx, date, proposed, meta.Confidence, now)
+		cancel()
+		if err != nil {
+			log.Printf("wake feedback: ensure inbox prompt for %s: %v", date, err)
+			return false
+		}
+		if created {
+			log.Printf("wake feedback: published inbox prompt for %s", date)
+		}
+		if telegramAvailable && bot != nil && fb.PromptMessageID == nil && fb.Response == "" {
+			if err := notify.DeliverWakeFeedbackToTelegram(bot, db, cfg.Lang, date, metric.ValueTimestamp.In(now.Location())); err != nil {
+				log.Printf("wake feedback: telegram delivery for %s: %v", date, err)
+			}
+		}
+		return created || fb.PromptMessageID != nil
+	}
+	if !telegramAvailable || bot == nil {
 		return false
 	}
 	sent, err := notify.SendWakeFeedbackPrompt(bot, db, cfg.Lang, date, now)
@@ -1464,11 +1514,33 @@ func trySendWakeFeedbackAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify
 	return sent
 }
 
-func trySendContextPromptAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, signalDate string, now time.Time) {
+func trySendContextPromptAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, signalDate string, now time.Time, inboxEnabled, telegramAvailable bool) {
 	if !storage.IsContextPromptsEnabled(db) {
 		return
 	}
 	promptDate := now.Format("2006-01-02")
+	if inboxEnabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, prompt, created, err := db.PublishLowSleepContextPromptToInbox(ctx, signalDate, promptDate, now, now.Add(36*time.Hour))
+		cancel()
+		if err != nil {
+			log.Printf("context prompt: publish inbox low_sleep date=%s: %v", signalDate, err)
+			return
+		}
+		if !created || prompt == nil {
+			return
+		}
+		log.Printf("context prompt: published inbox low_sleep prompt=%s date=%s", prompt.PromptID, signalDate)
+		if telegramAvailable && bot != nil {
+			if err := notify.DeliverContextPromptToTelegram(bot, db, cfg.Lang, prompt); err != nil {
+				log.Printf("context prompt: telegram delivery prompt=%s date=%s: %v", prompt.PromptID, signalDate, err)
+			}
+		}
+		return
+	}
+	if !telegramAvailable || bot == nil {
+		return
+	}
 	prompt, reserved, err := db.ReserveLowSleepContextPrompt(signalDate, promptDate, now, now.Add(36*time.Hour))
 	if err != nil {
 		log.Printf("context prompt: reserve low_sleep date=%s: %v", signalDate, err)

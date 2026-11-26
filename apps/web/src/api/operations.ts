@@ -277,7 +277,7 @@ export async function updateNotificationSettings(
 }
 
 export async function sendTestNotification(
-  kind: "morning" | "evening",
+  kind: "morning" | "evening" | "connection",
   signal?: AbortSignal,
 ): Promise<StatusMessage> {
   const params = new URLSearchParams({ kind });

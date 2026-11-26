@@ -5,6 +5,7 @@ interface AppHeaderProps {
   locale: Locale;
   isAdmin?: boolean;
   showInbox?: boolean;
+  inboxUnreadCount?: number;
 }
 
 function localizedHref(path: string, locale: Locale): string {
@@ -12,9 +13,15 @@ function localizedHref(path: string, locale: Locale): string {
   return `${path}${separator}lang=${locale}`;
 }
 
-export function AppHeader({ locale, isAdmin = false, showInbox = false }: AppHeaderProps) {
+export function AppHeader({
+  locale,
+  isAdmin = false,
+  showInbox = false,
+  inboxUnreadCount = 0,
+}: AppHeaderProps) {
   const params = new URLSearchParams(window.location.search);
   const currentPath = window.location.pathname;
+  const unreadLabel = inboxUnreadCount > 99 ? "99+" : String(inboxUnreadCount);
 
   return (
     <header className="app-header">
@@ -25,13 +32,22 @@ export function AppHeader({ locale, isAdmin = false, showInbox = false }: AppHea
         {showInbox ? (
           <a
             href={localizedHref("/inbox", locale)}
+            className="app-header__inbox-link"
             aria-current={
               currentPath === "/inbox" || currentPath.startsWith("/inbox/")
                 ? "page"
                 : undefined
             }
           >
-            {translate(locale, "inbox")}
+            <span>{translate(locale, "inbox")}</span>
+            {inboxUnreadCount > 0 ? (
+              <span
+                className="nav-unread-badge"
+                aria-label={`${inboxUnreadCount} ${translate(locale, "inboxUnread")}`}
+              >
+                {unreadLabel}
+              </span>
+            ) : null}
           </a>
         ) : null}
         <a

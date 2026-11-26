@@ -111,6 +111,41 @@ describe("PendingCheckinCard", () => {
     });
     expect(onExpired).toHaveBeenCalledWith(samplePrompt.prompt_id);
   });
+
+  it("renders wake feedback prompt with localized eyebrow and submits non-checkin answer", async () => {
+    const answerSpy = vi.spyOn(clientApi, "answerInboxPrompt").mockResolvedValue({
+      status: "saved",
+      answer: "confirmed",
+      answered_at: "2026-11-25T08:05:00Z",
+      timing: "on_time",
+      unread_count: 0,
+    });
+    const wakePrompt: PendingCheckinPrompt = {
+      prompt_id: "33333333-3333-3333-3333-333333333333",
+      kind: "prompt_wake_feedback",
+      local_date: "2026-11-25",
+      expires_at: "2026-11-25T16:00:00Z",
+      title: "Did you wake up around 07:15?",
+      options: [
+        { id: "confirmed", label: "Accurate" },
+        { id: "earlier", label: "Earlier" },
+        { id: "later", label: "Later" },
+        { id: "returned_to_sleep", label: "Went back to sleep" },
+      ],
+    };
+
+    render(<PendingCheckinCard locale="en" prompts={[wakePrompt]} />);
+    expect(screen.getByText("Wake time")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Accurate" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Saved: Accurate/)).toBeInTheDocument();
+    });
+    expect(answerSpy).toHaveBeenCalledWith(wakePrompt.prompt_id, {
+      answer: "confirmed",
+      channel: "web",
+    });
+  });
 });
 
 describe("InboxPage", () => {
@@ -336,5 +371,117 @@ describe("InboxPage", () => {
       "en", { limit: 20, cursor: "fresh-cursor" }, expect.any(AbortSignal),
     );
     await waitFor(() => expect(loadMore).not.toBeInTheDocument());
+  });
+
+  it("shows unread badge, filters unread, marks all read with snapshot watermark, and marks detail read", async () => {
+    window.history.replaceState({}, "", "/inbox?lang=en");
+    const getInboxSpy = vi
+      .spyOn(clientApi, "getInbox")
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "u1",
+            kind: "evening_report",
+            local_date: "2026-11-25",
+            created_at: "2026-11-25T20:00:00Z",
+            title: "Evening Report",
+            preview: "Solid day overall.",
+          },
+          {
+            id: "r1",
+            kind: "weekly_digest",
+            local_date: "2026-11-24",
+            created_at: "2026-11-24T09:00:00Z",
+            read_at: "2026-11-24T10:00:00Z",
+            title: "Weekly Digest",
+            preview: "All metrics steady.",
+          },
+        ],
+        unread_count: 1,
+        snapshot_at: "2026-11-25T20:05:00Z",
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            id: "u1",
+            kind: "evening_report",
+            local_date: "2026-11-25",
+            created_at: "2026-11-25T20:00:00Z",
+            title: "Evening Report",
+            preview: "Solid day overall.",
+          },
+        ],
+        unread_count: 1,
+        snapshot_at: "2026-11-25T20:06:00Z",
+      });
+    vi.spyOn(clientApi, "getPendingInboxPrompts").mockResolvedValue({
+      prompts: [],
+      unread_count: 1,
+    });
+    vi.spyOn(clientApi, "getSession").mockResolvedValue({ is_admin: false });
+    const markAllSpy = vi.spyOn(clientApi, "markAllInboxRead").mockResolvedValue({
+      updated: 1,
+      unread_count: 0,
+      before: "2026-11-25T20:06:00Z",
+    });
+
+    render(<InboxPage />);
+
+    expect(await screen.findByText("Evening Report")).toBeInTheDocument();
+    expect(screen.getByLabelText("1 unread")).toHaveTextContent("1");
+
+    fireEvent.click(screen.getByRole("tab", { name: /Unread/ }));
+    await waitFor(() => {
+      expect(getInboxSpy).toHaveBeenLastCalledWith(
+        "en",
+        { limit: 20, filter: "unread" },
+        expect.any(AbortSignal),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Mark all read" }));
+    await waitFor(() => {
+      expect(markAllSpy).toHaveBeenCalledWith({ before: "2026-11-25T20:06:00Z" });
+    });
+    expect(screen.getByText("All caught up — no unread items.")).toBeInTheDocument();
+  });
+
+  it("marks unread detail item as read and renders safe action_route link", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/inbox/55555555-5555-5555-5555-555555555555?lang=en",
+    );
+    vi.spyOn(clientApi, "getInboxItem").mockResolvedValue({
+      id: "55555555-5555-5555-5555-555555555555",
+      kind: "nudge",
+      local_date: "2026-11-25",
+      created_at: "2026-11-25T12:00:00Z",
+      title: "Energy backfill ready",
+      body: "You can now backfill your historical EnergyBank.",
+      action_route: "/settings",
+    });
+    vi.spyOn(clientApi, "getSession").mockResolvedValue({ is_admin: false });
+    const markReadSpy = vi.spyOn(clientApi, "markInboxItemRead").mockResolvedValue({
+      id: "55555555-5555-5555-5555-555555555555",
+      read_at: "2026-11-25T12:05:00Z",
+      unread_count: 2,
+    });
+
+    render(<InboxPage itemId="55555555-5555-5555-5555-555555555555" />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Energy backfill ready" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open details" })).toHaveAttribute(
+      "href",
+      "/settings?lang=en",
+    );
+    await waitFor(() => {
+      expect(markReadSpy).toHaveBeenCalledWith(
+        "55555555-5555-5555-5555-555555555555",
+        expect.any(AbortSignal),
+      );
+    });
   });
 });

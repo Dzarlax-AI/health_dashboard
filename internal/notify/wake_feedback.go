@@ -22,19 +22,69 @@ type WakeFeedbackStore interface {
 	SaveDerivedMetricFeedbackPrompted(feedback storage.DerivedMetricFeedback) (bool, error)
 }
 
-func buildWakeFeedbackPrompt(lang, date string, wake time.Time) ([][]InlineButton, string) {
+// WakeFeedbackPromptOptions returns the localized prompt text and canonical
+// ordered answer options shared across Telegram, iOS, and Web.
+func WakeFeedbackPromptOptions(lang string, wake time.Time) (string, []CheckinOption) {
 	t := health.GetStrings(lang)
+	opts := []CheckinOption{
+		{ID: storage.WakeFeedbackConfirmed, Label: t["wake_feedback_btn_yes"]},
+		{ID: storage.WakeFeedbackEarlier, Label: t["wake_feedback_btn_earlier"]},
+		{ID: storage.WakeFeedbackLater, Label: t["wake_feedback_btn_later"]},
+		{ID: storage.WakeFeedbackReturnedSleep, Label: t["wake_feedback_btn_returned"]},
+	}
+	text := t["wake_feedback_prompt"]
+	if !wake.IsZero() {
+		text = fmt.Sprintf(t["wake_feedback_prompt"], wake.Format("15:04"))
+	}
+	return text, opts
+}
+
+func buildWakeFeedbackPrompt(lang, date string, wake time.Time) ([][]InlineButton, string) {
+	text, opts := WakeFeedbackPromptOptions(lang, wake)
 	rows := [][]InlineButton{
 		{
-			{Text: t["wake_feedback_btn_yes"], CallbackData: fmt.Sprintf("%s:%s:%s", WakeFeedbackCallbackPrefix, storage.WakeFeedbackConfirmed, date)},
-			{Text: t["wake_feedback_btn_earlier"], CallbackData: fmt.Sprintf("%s:%s:%s", WakeFeedbackCallbackPrefix, storage.WakeFeedbackEarlier, date)},
+			{Text: opts[0].Label, CallbackData: fmt.Sprintf("%s:%s:%s", WakeFeedbackCallbackPrefix, opts[0].ID, date)},
+			{Text: opts[1].Label, CallbackData: fmt.Sprintf("%s:%s:%s", WakeFeedbackCallbackPrefix, opts[1].ID, date)},
 		},
 		{
-			{Text: t["wake_feedback_btn_later"], CallbackData: fmt.Sprintf("%s:%s:%s", WakeFeedbackCallbackPrefix, storage.WakeFeedbackLater, date)},
-			{Text: t["wake_feedback_btn_returned"], CallbackData: fmt.Sprintf("%s:%s:%s", WakeFeedbackCallbackPrefix, storage.WakeFeedbackReturnedSleep, date)},
+			{Text: opts[2].Label, CallbackData: fmt.Sprintf("%s:%s:%s", WakeFeedbackCallbackPrefix, opts[2].ID, date)},
+			{Text: opts[3].Label, CallbackData: fmt.Sprintf("%s:%s:%s", WakeFeedbackCallbackPrefix, opts[3].ID, date)},
 		},
 	}
-	return rows, fmt.Sprintf(t["wake_feedback_prompt"], wake.Format("15:04"))
+	return rows, text
+}
+
+// DeliverWakeFeedbackToTelegram delivers an already-committed canonical wake
+// feedback prompt to Telegram using its durable delivery key, guarded by the
+// live telegram_notifications_enabled barrier.
+func DeliverWakeFeedbackToTelegram(bot CheckinBot, db *storage.DB, lang, date string, wake time.Time) error {
+	if bot == nil || db == nil || date == "" || !storage.IsTelegramNotificationsEnabled(db) {
+		return nil
+	}
+	key := "prompt:wake_feedback:" + date
+	ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
+	token, reserved, err := db.ReserveNotificationDelivery(ctx, key)
+	cancel()
+	if err != nil || !reserved {
+		return err
+	}
+	if !storage.IsTelegramNotificationsEnabled(db) {
+		_ = completeNotificationDelivery(db, key, token, "failed", "telegram_disabled")
+		return nil
+	}
+	rows, text := buildWakeFeedbackPrompt(lang, date, wake)
+	msgID, err := bot.SendInlineKeyboard(text, rows)
+	if err != nil {
+		status, code := deliveryFailureStatus(err)
+		return errors.Join(err, completeNotificationDelivery(db, key, token, status, code))
+	}
+	attachCtx, attachCancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
+	attachErr := db.AttachWakeFeedbackTelegramMessageID(attachCtx, date, msgID)
+	attachCancel()
+	if attachErr != nil {
+		return errors.Join(attachErr, completeNotificationDelivery(db, key, token, "sent", ""))
+	}
+	return completeNotificationDelivery(db, key, token, "sent", "")
 }
 
 func parseWakeFeedbackCallback(payload string) (response, date string, ok bool) {
@@ -55,6 +105,9 @@ func parseWakeFeedbackCallback(payload string) (response, date string, ok bool) 
 // morning report. It returns sent=false for disabled, missing, duplicate, or
 // high-confidence-cadence skips.
 func SendWakeFeedbackPrompt(bot CheckinBot, store WakeFeedbackStore, lang, date string, now time.Time) (bool, error) {
+	if db, ok := store.(*storage.DB); ok && !storage.IsTelegramNotificationsEnabled(db) {
+		return false, nil
+	}
 	metric, err := store.GetDerivedMetric(storage.DerivedMetricWakeTime, date)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -68,7 +121,7 @@ func SendWakeFeedbackPrompt(bot CheckinBot, store WakeFeedbackStore, lang, date 
 	_ = json.Unmarshal(metric.Metadata, &metadata)
 	if metadata.Confidence == storage.WakeConfidenceHigh {
 		recent, err := store.HasRecentDerivedMetricFeedback(
-			storage.DerivedMetricWakeTime, storage.DerivedMetricFeedbackTelegram, date, 7,
+			storage.DerivedMetricWakeTime, "", date, 7,
 		)
 		if err != nil || recent {
 			return false, err
@@ -88,6 +141,12 @@ func SendWakeFeedbackPrompt(bot CheckinBot, store WakeFeedbackStore, lang, date 
 		if reserveErr != nil || !reserved {
 			return false, reserveErr
 		}
+	}
+	if db, ok := store.(*storage.DB); ok && !storage.IsTelegramNotificationsEnabled(db) {
+		if delivery != nil {
+			_ = completeNotificationDelivery(delivery, "prompt:wake_feedback:"+date, token, "failed", "telegram_disabled")
+		}
+		return false, nil
 	}
 	messageID, err := bot.SendInlineKeyboard(text, rows)
 	if err != nil {

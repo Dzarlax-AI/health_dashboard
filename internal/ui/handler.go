@@ -222,8 +222,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/reports/history/{id}", h.guard(h.reportHistoryDetail))
 	mux.HandleFunc("GET /api/inbox", h.guard(h.inboxList))
 	mux.HandleFunc("GET /api/inbox/pending", h.guard(h.inboxPending))
+	mux.HandleFunc("POST /api/inbox/read-all", h.guard(h.inboxReadAll))
 	mux.HandleFunc("GET /api/inbox/{id}", h.guard(h.inboxDetail))
+	mux.HandleFunc("POST /api/inbox/{id}/read", h.guard(h.inboxMarkRead))
 	mux.HandleFunc("POST /api/prompts/{prompt_id}/answer", h.guard(h.promptAnswer))
+	mux.HandleFunc("GET /api/notifications/preferences", h.guard(h.notificationPreferencesGet))
+	mux.HandleFunc("PUT /api/notifications/preferences", h.guard(h.notificationPreferencesPut))
 	mux.HandleFunc("POST /api/push/devices", h.guard(h.pushDeviceRegister))
 	mux.HandleFunc("DELETE /api/push/devices/{device_id}", h.guard(h.pushDeviceDelete))
 	mux.HandleFunc("GET /api/today-insights", h.guard(h.todayInsights))
@@ -3879,10 +3883,16 @@ func (h *Handler) adminTestNotify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := r.URL.Query().Get("kind")
-	if kind != "morning" && kind != "evening" {
+	if kind != "morning" && kind != "evening" && kind != "connection" {
 		kind = "morning"
 	}
 	if err := testNotify(kind); err != nil {
+		if errors.Is(err, notify.ErrTelegramNotificationsDisabled) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(clientapi.StatusMessage{Status: "error", Message: err.Error()})
+			return
+		}
 		jsonResponse(w, clientapi.StatusMessage{Status: "error", Message: err.Error()})
 		return
 	}
@@ -3993,18 +4003,27 @@ func (h *Handler) adminQualityDigest(w http.ResponseWriter, r *http.Request) {
 	}
 	db := scope.DB
 	cfg := db.GetNotifyConfig(storage.NotifyConfig{})
-	if !cfg.Enabled() {
+	if !cfg.HasTelegramCredentials() {
 		http.Error(w, "Telegram not configured", http.StatusBadRequest)
+		return
+	}
+	if cfg.TelegramDisabled {
+		http.Error(w, notify.ErrTelegramNotificationsDisabled.Error(), http.StatusConflict)
 		return
 	}
 	bot := notify.NewBot(cfg.Token, cfg.ChatID)
 	ncfg := notify.Config{
-		Token:    cfg.Token,
-		ChatID:   cfg.ChatID,
-		Lang:     cfg.Lang,
-		Timezone: cfg.Timezone,
+		Token:            cfg.Token,
+		ChatID:           cfg.ChatID,
+		Lang:             cfg.Lang,
+		Timezone:         cfg.Timezone,
+		TelegramDisabled: cfg.TelegramDisabled,
 	}
 	if err := notify.SendWeeklyDigestForce(bot, db, ncfg, 7); err != nil {
+		if errors.Is(err, notify.ErrTelegramNotificationsDisabled) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

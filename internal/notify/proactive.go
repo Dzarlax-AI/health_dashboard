@@ -124,9 +124,7 @@ func Register(p ProactiveNotification) {
 // catastrophic registry failure leaves the user with their normal
 // morning summary.
 func MaybeFireAll(bot *Bot, db *storage.DB, cfg Config, baseURL string) {
-	if !cfg.Enabled() {
-		// Single gate at the top — none of the registered rules can
-		// send without Telegram configured, no point iterating.
+	if !storage.IsInAppInboxEnabled(db) && !cfg.Enabled() {
 		return
 	}
 	registryMu.Lock()
@@ -206,8 +204,38 @@ func fireOne(bot *Bot, db *storage.DB, cfg Config, baseURL string, p ProactiveNo
 		return
 	}
 
-	history := storage.ReportHistory{Kind: "proactive", LocalDate: now.Format("2006-01-02"), Timezone: cfg.location().String(), Language: cfg.Lang, PlainBody: msg}
-	deliveryKey := "proactive:" + p.Name + ":" + now.Format("2006-01-02")
+	dateStr := now.Format("2006-01-02")
+	history := storage.ReportHistory{Kind: "proactive", LocalDate: dateStr, Timezone: cfg.location().String(), Language: cfg.Lang, PlainBody: msg, FallbackReason: p.Name}
+	deliveryKey := "proactive:" + p.Name + ":" + dateStr
+
+	if storage.IsInAppInboxEnabled(db) {
+		inboxKind := storage.InboxKindNudge
+		logicalKey := storage.InboxKindNudge + ":" + p.Name + ":" + dateStr
+		if p.Name == "weekly_digest" {
+			inboxKind = storage.InboxKindWeeklyDigest
+			logicalKey = storage.InboxKindWeeklyDigest + ":" + dateStr
+		}
+		inboxID, created, err := db.PublishProactiveToInbox(ctx, &history, logicalKey, deliveryKey, nil, now, loc, inboxKind, 24*time.Hour)
+		if err != nil {
+			log.Printf("proactive %s: publish inbox error: %v", p.Name, err)
+			return
+		}
+		if inboxID == (storage.ReportHistory{}.ID) {
+			return
+		}
+		if created {
+			// Persist cadence marker upon Inbox publication so a Telegram send
+			// failure never breaks cadence or causes duplicate Inbox cards.
+			db.SaveSettings(map[string]string{key: dateStr})
+		}
+		if bot != nil && cfg.Enabled() && storage.IsTelegramNotificationsEnabled(db) {
+			if _, sendErr := DeliverArchivedReportToTelegram(db, bot, cfg, &history); sendErr != nil {
+				log.Printf("proactive %s: telegram delivery error (inbox card preserved): %v", p.Name, sendErr)
+			}
+		}
+		return
+	}
+
 	token, reserved, err := db.ReserveProactive(ctx, &history, deliveryKey, nil, now, loc)
 	if err == nil && reserved {
 		_, err = sendReservedArchivedReport(reportDeliveryDurable, db, bot, cfg, deliveryKey, &history, token)
@@ -225,7 +253,7 @@ func fireOne(bot *Bot, db *storage.DB, cfg Config, baseURL string, p ProactiveNo
 	// daily-cadence rules and a slightly-noisy weekly digest at
 	// worst. Don't log the write error because GetSetting/SaveSettings
 	// have their own internal logging.
-	db.SaveSettings(map[string]string{key: now.Format("2006-01-02")})
+	db.SaveSettings(map[string]string{key: dateStr})
 }
 
 // proactiveSentKey is the settings key for the last-sent date of

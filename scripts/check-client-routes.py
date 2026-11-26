@@ -100,7 +100,10 @@ def consumer_paths(sources):
                     elif path == "/api/admin/users/" and "encodeURIComponent(username)" in line:
                         path += "{username}/api-key"
                     elif path == "/api/inbox/" and ('\\(' in line or '${' in line):
-                        path += "{id}"
+                        if "/read" in line:
+                            path += "{id}/read"
+                        else:
+                            path += "{id}"
                     elif path == "/api/prompts/" and ('\\(' in line or '${' in line) and "/answer" in line:
                         path += "{prompt_id}/answer"
                     elif path == "/api/push/devices/" and ('\\(' in line or '${' in line):
