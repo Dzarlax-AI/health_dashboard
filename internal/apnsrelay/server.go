@@ -319,6 +319,7 @@ func (s *Server) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"grant_id":   summary.GrantID,
 		"expires_at": summary.ExpiresAt,
+		"token_hash": summary.TokenHashHex,
 	})
 }
 
@@ -373,6 +374,7 @@ func (s *Server) handleRefreshGrant(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"grant_id":   summary.GrantID,
 		"expires_at": summary.ExpiresAt,
+		"token_hash": summary.TokenHashHex,
 	})
 }
 

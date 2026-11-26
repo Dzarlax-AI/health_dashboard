@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -315,9 +316,10 @@ type CreateGrantInput struct {
 }
 
 type GrantSummary struct {
-	GrantID   uuid.UUID
-	ExpiresAt time.Time
-	Replayed  bool
+	GrantID      uuid.UUID
+	ExpiresAt    time.Time
+	TokenHashHex string
+	Replayed     bool
 }
 
 func tokenAAD(appID, keyID string, grantID uuid.UUID) []byte {
@@ -350,11 +352,12 @@ func (s *Store) CreateGrant(ctx context.Context, ac AssertionContext, in CreateG
 		var existingRegID uuid.UUID
 		var existingContract int
 		var existingEnv string
+		var existingTokenHash []byte
 		var existingExp time.Time
 		var existingRevoked, existingInvalidated *time.Time
 		err := tx.QueryRow(ctx, `
 			SELECT grant_id, secret_hash, reg_id, inbox_contract_version, apns_env,
-			       expires_at, revoked_at, invalidated_at
+			       token_hash, expires_at, revoked_at, invalidated_at
 			  FROM relay_grants
 			 WHERE key_id = $1
 			   AND client_grant_key = $2
@@ -362,7 +365,7 @@ func (s *Store) CreateGrant(ctx context.Context, ac AssertionContext, in CreateG
 			key.KeyID, in.ClientGrantKey,
 		).Scan(
 			&existingID, &existingSecretHash, &existingRegID, &existingContract, &existingEnv,
-			&existingExp, &existingRevoked, &existingInvalidated,
+			&existingTokenHash, &existingExp, &existingRevoked, &existingInvalidated,
 		)
 		if err == nil {
 			if existingRevoked != nil || existingInvalidated != nil || !existingExp.After(now) {
@@ -374,7 +377,31 @@ func (s *Store) CreateGrant(ctx context.Context, ac AssertionContext, in CreateG
 				existingEnv != in.APNsEnv {
 				return ErrGrantConflict
 			}
-			out = GrantSummary{GrantID: existingID, ExpiresAt: existingExp, Replayed: true}
+			newTokHash := sha256.Sum256([]byte(in.APNsToken))
+			if !bytes.Equal(existingTokenHash, newTokHash[:]) {
+				encToken, encErr := s.cipher.Encrypt(in.APNsToken, tokenAAD(ac.App.AppID, key.KeyID, existingID))
+				if encErr != nil {
+					return encErr
+				}
+				if _, updErr := tx.Exec(ctx, `
+					UPDATE relay_grants
+					   SET apns_token_enc = $2,
+					       token_hash = $3,
+					       token_version = token_version + 1,
+					       token_updated_at = $4,
+					       updated_at = $4
+					 WHERE grant_id = $1`,
+					existingID, encToken, newTokHash[:], now,
+				); updErr != nil {
+					return updErr
+				}
+			}
+			out = GrantSummary{
+				GrantID:      existingID,
+				ExpiresAt:    existingExp,
+				TokenHashHex: hex.EncodeToString(newTokHash[:]),
+				Replayed:     true,
+			}
 			return nil
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -430,7 +457,12 @@ func (s *Store) CreateGrant(ctx context.Context, ac AssertionContext, in CreateG
 		); err != nil {
 			return err
 		}
-		out = GrantSummary{GrantID: grantID, ExpiresAt: exp, Replayed: false}
+		out = GrantSummary{
+			GrantID:      grantID,
+			ExpiresAt:    exp,
+			TokenHashHex: hex.EncodeToString(tokHash[:]),
+			Replayed:     false,
+		}
 		return nil
 	})
 	return out, err
@@ -509,7 +541,11 @@ func (s *Store) RefreshGrant(ctx context.Context, ac AssertionContext, in Refres
 		); err != nil {
 			return err
 		}
-		out = GrantSummary{GrantID: in.GrantID, ExpiresAt: newExp}
+		out = GrantSummary{
+			GrantID:      in.GrantID,
+			ExpiresAt:    newExp,
+			TokenHashHex: hex.EncodeToString(newHash),
+		}
 		return nil
 	})
 	return out, err

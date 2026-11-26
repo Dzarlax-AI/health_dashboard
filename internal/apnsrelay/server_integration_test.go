@@ -744,3 +744,89 @@ func TestRelayCancelByClientKeySurvivesCleanupForeverWhileKeyLives(t *testing.T)
 		t.Fatalf("expected 410 GrantRevoked after cancel by client key, got %d %s", delRec.Code, delRec.Body.String())
 	}
 }
+
+func TestRelayCreateGrantReplayUpdatesRotatedAPNsToken(t *testing.T) {
+	h := newRelayHarness(t)
+	dev := newTestDeviceKey(t)
+	h.registerDevice(AppIDHealthSync, DefaultHealthAppleAppID, dev, aaguidProduction)
+
+	clientKey := uuid.New()
+	regID := uuid.New()
+	secret := "secret-replay-token-rotate-32bytes-01"
+	secretSum := sha256.Sum256([]byte(secret))
+	secretHashB64 := base64.RawURLEncoding.EncodeToString(secretSum[:])
+	tokA := strings.Repeat("1a", 32)
+	tokB := strings.Repeat("2b", 32)
+
+	// 1. Initial POST /v1/grants succeeds on Relay with token A (response lost on client).
+	rec1 := h.signedRequest(http.MethodPost, "/v1/grants", AppIDHealthSync, DefaultHealthAppleAppID, dev, OpGrantCreate, func(ch ChallengeResponse) any {
+		return CreateGrantRequest{
+			AppID:                AppIDHealthSync,
+			Op:                   OpGrantCreate,
+			ResourceID:           clientKey.String(),
+			ChallengeID:          ch.ChallengeID.String(),
+			Nonce:                ch.Nonce,
+			ClientGrantKey:       clientKey.String(),
+			SecretHash:           secretHashB64,
+			RegID:                regID.String(),
+			InboxContractVersion: storage.InboxContractV2,
+			APNsToken:            tokA,
+			APNsEnv:              storage.PushEnvProduction,
+		}
+	})
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("initial grant status=%d body=%s", rec1.Code, rec1.Body.String())
+	}
+	var g1 struct {
+		GrantID   uuid.UUID `json:"grant_id"`
+		TokenHash string    `json:"token_hash"`
+	}
+	_ = json.Unmarshal(rec1.Body.Bytes(), &g1)
+
+	// 2. Device rotates APNs token A -> B before retrying POST /v1/grants with the same client_grant_key.
+	h.advance(5 * time.Second)
+	rec2 := h.signedRequest(http.MethodPost, "/v1/grants", AppIDHealthSync, DefaultHealthAppleAppID, dev, OpGrantCreate, func(ch ChallengeResponse) any {
+		return CreateGrantRequest{
+			AppID:                AppIDHealthSync,
+			Op:                   OpGrantCreate,
+			ResourceID:           clientKey.String(),
+			ChallengeID:          ch.ChallengeID.String(),
+			Nonce:                ch.Nonce,
+			ClientGrantKey:       clientKey.String(),
+			SecretHash:           secretHashB64,
+			RegID:                regID.String(),
+			InboxContractVersion: storage.InboxContractV2,
+			APNsToken:            tokB,
+			APNsEnv:              storage.PushEnvProduction,
+		}
+	})
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("replay grant with rotated token status=%d body=%s", rec2.Code, rec2.Body.String())
+	}
+	var g2 struct {
+		GrantID   uuid.UUID `json:"grant_id"`
+		TokenHash string    `json:"token_hash"`
+	}
+	_ = json.Unmarshal(rec2.Body.Bytes(), &g2)
+	tokBSum := sha256.Sum256([]byte(tokB))
+	wantTokBHex := fmt.Sprintf("%x", tokBSum[:])
+	if g2.GrantID != g1.GrantID || g2.TokenHash != wantTokBHex {
+		t.Fatalf("replay grant mismatch: got id=%s hash=%q, want id=%s hash=%q", g2.GrantID, g2.TokenHash, g1.GrantID, wantTokBHex)
+	}
+
+	// 3. Delivery MUST go to rotated token B, never stale token A!
+	delRec := h.doJSON(http.MethodPost, "/v1/deliveries", DeliveryRequest{
+		Kind:        storage.InboxKindMorningReport,
+		Locale:      "en",
+		InboxItemID: uuid.New().String(),
+		RegID:       regID.String(),
+		APNsID:      uuid.New().String(),
+		ExpiresAt:   h.curNow.Add(6 * time.Hour).Unix(),
+	}, map[string]string{"Authorization": "Bearer " + secret})
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("deliver after replay token rotation status=%d body=%s", delRec.Code, delRec.Body.String())
+	}
+	if gotTok := h.healthSender.lastCall().Token; gotTok != tokB {
+		t.Fatalf("expected delivery to rotated token B %q, got stale token %q", tokB, gotTok)
+	}
+}
