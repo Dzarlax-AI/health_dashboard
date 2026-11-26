@@ -115,7 +115,7 @@ func (h *Handler) pushDeviceRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		relayGrantSecret = strings.TrimSpace(*req.RelayGrantSecret)
-		if len(relayGrantSecret) < 16 || len(relayGrantSecret) > 512 {
+		if !storage.ValidRelayGrantSecret(relayGrantSecret) {
 			jsonError(w, "invalid relay_grant_secret", http.StatusBadRequest)
 			return
 		}

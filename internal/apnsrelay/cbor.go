@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"unicode/utf8"
 )
 
 var (
@@ -126,6 +127,9 @@ func (d *cborDecoder) readValue(depth int) (any, error) {
 		raw, err := d.readBytes(n)
 		if err != nil {
 			return nil, err
+		}
+		if !utf8.Valid(raw) {
+			return nil, errInvalidCBOR
 		}
 		return string(raw), nil
 	case 4: // array

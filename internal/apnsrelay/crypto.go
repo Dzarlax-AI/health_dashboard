@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 )
@@ -38,14 +37,14 @@ func ParseTokenCipherKeys(spec string) (*TokenCipher, error) {
 		kid = strings.TrimSpace(kid)
 		hexKey = strings.TrimSpace(hexKey)
 		if !ok || kid == "" || strings.ContainsAny(kid, ": \t\r\n") {
-			return nil, fmt.Errorf("invalid encryption key entry %q", kid)
+			return nil, errors.New("invalid encryption key entry; expected key ID and 32-byte hex key")
 		}
 		if _, dup := tc.keys[kid]; dup {
-			return nil, fmt.Errorf("duplicate encryption key id %q", kid)
+			return nil, errors.New("duplicate encryption key ID")
 		}
 		keyBytes, err := hex.DecodeString(hexKey)
 		if err != nil || len(keyBytes) != 32 {
-			return nil, fmt.Errorf("encryption key %q must be 32-byte hex (64 chars)", kid)
+			return nil, errors.New("encryption key must be 32-byte hex (64 chars)")
 		}
 		block, err := aes.NewCipher(keyBytes)
 		if err != nil {
@@ -80,6 +79,10 @@ func (c *TokenCipher) Encrypt(plaintext string, aad []byte) ([]byte, error) {
 	return []byte(encoded), nil
 }
 
+func (c *TokenCipher) UsesActiveKey(ciphertext []byte) bool {
+	return c != nil && strings.HasPrefix(string(ciphertext), "v1:"+c.activeID+":")
+}
+
 func (c *TokenCipher) Decrypt(ciphertext, aad []byte) (string, error) {
 	if c == nil {
 		return "", errors.New("token cipher not configured")
@@ -90,7 +93,7 @@ func (c *TokenCipher) Decrypt(ciphertext, aad []byte) (string, error) {
 	}
 	aead, ok := c.keys[parts[1]]
 	if !ok {
-		return "", fmt.Errorf("unknown encryption key id %q", parts[1])
+		return "", errors.New("unknown encryption key ID")
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {

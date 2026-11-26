@@ -83,15 +83,23 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	serveDone := make(chan error, 1)
 	go func() {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = httpServer.Shutdown(shutCtx)
+		log.Printf("apns_relay: listening on %s", addr)
+		serveDone <- httpServer.ListenAndServe()
 	}()
-
-	log.Printf("apns_relay: listening on %s", addr)
-	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("apns_relay: listen: %v", err)
+	select {
+	case err := <-serveDone:
+		if err != http.ErrServerClosed {
+			log.Fatalf("apns_relay: listen: %v", err)
+		}
+	case <-ctx.Done():
+		shutCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutCtx); err != nil {
+			log.Printf("apns_relay: shutdown: %v", err)
+			_ = httpServer.Close()
+		}
+		<-serveDone
 	}
 }

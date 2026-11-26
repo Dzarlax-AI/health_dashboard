@@ -14,16 +14,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
-	ChallengeTTL            = 3 * time.Minute
-	GrantTTL                = 90 * 24 * time.Hour
-	MaxActiveGrantsPerKey   = 10
-	MaxGrantsCreatedPerDay  = 20
-	DefaultDailyGrantLimit  = 30
-	GrantCleanupRetention   = 30 * 24 * time.Hour
+	ChallengeTTL           = 3 * time.Minute
+	GrantTTL               = 90 * 24 * time.Hour
+	MaxActiveGrantsPerKey  = 10
+	MaxGrantsCreatedPerDay = 20
+	DefaultDailyGrantLimit = 30
+	GrantCleanupRetention  = 30 * 24 * time.Hour
 )
 
 var (
@@ -251,7 +252,6 @@ type AssertionContext struct {
 }
 
 func (s *Store) withVerifiedAssertion(ctx context.Context, ac AssertionContext, fn func(tx pgx.Tx, key attestedKeyRow, now time.Time) error) error {
-	now := s.currentTime()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -275,6 +275,7 @@ func (s *Store) withVerifiedAssertion(ctx context.Context, ac AssertionContext, 
 		return err
 	}
 
+	now := s.currentTime()
 	nonce, err := consumeChallengeTx(ctx, tx, ac.ChallengeID, ac.App.AppID, ac.KeyID, ac.Op, now)
 	if err != nil {
 		return err
@@ -455,6 +456,10 @@ func (s *Store) CreateGrant(ctx context.Context, ac AssertionContext, in CreateG
 			in.InboxContractVersion, encToken, tokHash[:], now,
 			in.APNsEnv, exp,
 		); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return ErrGrantConflict
+			}
 			return err
 		}
 		out = GrantSummary{
@@ -501,6 +506,7 @@ func (s *Store) RefreshGrant(ctx context.Context, ac AssertionContext, in Refres
 		if err != nil {
 			return err
 		}
+		now = s.currentTime()
 		if revokedAt != nil || invalidatedAt != nil || !expiresAt.After(now) {
 			return ErrGrantTerminal
 		}
@@ -520,6 +526,18 @@ func (s *Store) RefreshGrant(ctx context.Context, ac AssertionContext, in Refres
 				newHash = h[:]
 				newVer++
 				newTokUpdatedAt = now
+			}
+		}
+		// Rewrap under the active key without changing the token generation.
+		if bytes.Equal(newEnc, existingTokenEnc) && !s.cipher.UsesActiveKey(existingTokenEnc) {
+			aad := tokenAAD(ac.App.AppID, key.KeyID, in.GrantID)
+			token, err := s.cipher.Decrypt(existingTokenEnc, aad)
+			if err != nil {
+				return err
+			}
+			newEnc, err = s.cipher.Encrypt(token, aad)
+			if err != nil {
+				return err
 			}
 		}
 		newContract := existingContract

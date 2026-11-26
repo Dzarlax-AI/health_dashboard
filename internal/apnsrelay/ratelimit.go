@@ -7,14 +7,16 @@ import (
 
 type windowBucket struct {
 	timestamps []time.Time
+	window     time.Duration
 }
 
 // RateLimiter implements an exact in-memory sliding-window rate limiter keyed
 // by opaque scope strings (e.g. IP or grant_id).
 type RateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*windowBucket
-	now     func() time.Time
+	mu        sync.Mutex
+	buckets   map[string]*windowBucket
+	now       func() time.Time
+	nextSweep time.Time
 }
 
 func NewRateLimiter(now func() time.Time) *RateLimiter {
@@ -39,9 +41,24 @@ func (r *RateLimiter) Allow(key string, limit int, window time.Duration) (bool, 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Sweep at most once per minute, using each key's own retention window.
+	if !now.Before(r.nextSweep) {
+		for k, bucket := range r.buckets {
+			last := len(bucket.timestamps) - 1
+			if last < 0 || !bucket.timestamps[last].Add(bucket.window).After(now) {
+				delete(r.buckets, k)
+			}
+		}
+		r.nextSweep = now.Add(time.Minute)
+	}
+
 	b := r.buckets[key]
 	if b == nil {
-		b = &windowBucket{}
+		const maxBuckets = 10000
+		if len(r.buckets) >= maxBuckets {
+			return false, r.nextSweep.Sub(now)
+		}
+		b = &windowBucket{window: window}
 		r.buckets[key] = b
 	}
 	keep := b.timestamps[:0]
@@ -60,13 +77,5 @@ func (r *RateLimiter) Allow(key string, limit int, window time.Duration) (bool, 
 	}
 	b.timestamps = append(b.timestamps, now)
 
-	// Opportunistic bound on map size.
-	if len(r.buckets) > 10000 {
-		for k, v := range r.buckets {
-			if len(v.timestamps) == 0 || !v.timestamps[len(v.timestamps)-1].After(cutoff) {
-				delete(r.buckets, k)
-			}
-		}
-	}
 	return true, 0
 }

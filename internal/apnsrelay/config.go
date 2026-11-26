@@ -143,15 +143,15 @@ func (r *Registry) Get(appID string) (*AppConfig, bool) {
 }
 
 type fileAppConfig struct {
-	AppID                      string `json:"app_id"`
-	AppleAppID                 string `json:"apple_app_id"`
-	APNsTopic                  string `json:"apns_topic"`
-	Policy                     string `json:"policy"`
-	AllowSandbox               bool   `json:"allow_sandbox"`
-	ProductionCredentialsFile  string `json:"production_credentials_file,omitempty"`
-	ProductionCredentialsJSON  string `json:"production_credentials_json,omitempty"`
-	SandboxCredentialsFile     string `json:"sandbox_credentials_file,omitempty"`
-	SandboxCredentialsJSON     string `json:"sandbox_credentials_json,omitempty"`
+	AppID                     string `json:"app_id"`
+	AppleAppID                string `json:"apple_app_id"`
+	APNsTopic                 string `json:"apns_topic"`
+	Policy                    string `json:"policy"`
+	AllowSandbox              bool   `json:"allow_sandbox"`
+	ProductionCredentialsFile string `json:"production_credentials_file,omitempty"`
+	ProductionCredentialsJSON string `json:"production_credentials_json,omitempty"`
+	SandboxCredentialsFile    string `json:"sandbox_credentials_file,omitempty"`
+	SandboxCredentialsJSON    string `json:"sandbox_credentials_json,omitempty"`
 }
 
 // LoadRegistryFromEnv loads the Relay multi-app configuration either from
@@ -251,7 +251,7 @@ func resolvePolicy(name, appID string) (PayloadPolicy, error) {
 	}
 }
 
-func loadSenderForTopic(topic, credJSON, credFile string) (*apnspush.Sender, error) {
+func loadSenderForTopic(topic, credJSON, credFile string) (apnspush.TransportSender, error) {
 	if credJSON == "" && credFile == "" {
 		return nil, nil
 	}

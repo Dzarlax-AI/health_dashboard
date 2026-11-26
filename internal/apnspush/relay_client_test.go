@@ -165,6 +165,15 @@ func TestClassifyRelayOutcomeMatrix(t *testing.T) {
 		t.Fatalf("retryable_apns 500 backoff mismatch: %+v", apns500)
 	}
 
+	// The relay's daily quota can require waiting beyond the provider's 429 cap.
+	d.ExpiresAt = now.Add(5 * time.Hour)
+	quota := classifyRelayOutcome(d, attemptID, RelayDeliveryResult{
+		Status: 429, Outcome: RelayOutcomeRetryablePreSend, RetryAfter: 4 * time.Hour,
+	}, nil, now)
+	if quota.DeliveryState != storage.PushDeliveryStateRetryWait || quota.RetryAfter != 4*time.Hour {
+		t.Fatalf("unexpected Relay quota retry: %+v", quota)
+	}
+
 	// 5. rejected (e.g. stale 410 timestamp) -> rejected WITHOUT InvalidateDevice.
 	rej := classifyRelayOutcome(d, attemptID, RelayDeliveryResult{Status: 409, Outcome: RelayOutcomeRejected, Reason: "StaleAPNsInvalidationTimestamp"}, nil, now)
 	if rej.DeliveryState != storage.PushDeliveryStateRejected || rej.InvalidateDevice {

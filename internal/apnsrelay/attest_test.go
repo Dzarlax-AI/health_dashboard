@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"health-receiver/internal/apnspush"
 )
 
 type testAttestCA struct {
@@ -316,5 +318,30 @@ func TestTokenCipherKeyRotation(t *testing.T) {
 	// Wrong AAD must fail decryption.
 	if _, err := c2.Decrypt(ct2, []byte("wrong-aad")); err == nil {
 		t.Fatal("expected wrong AAD to fail decryption")
+	}
+}
+
+func TestCanonicalRegistrationMatchesIOSFixture(t *testing.T) {
+	const want = `{"app_id":"health_sync","challenge_id":"challenge","nonce":"nonce","op":"attest.register","resource_id":"key/abc+=="}`
+	if got := string(CanonicalRegisterPayload("health_sync", "key/abc+==", "challenge", "nonce")); got != want {
+		t.Fatalf("canonical registration = %s, want %s", got, want)
+	}
+}
+
+func TestRejectInvalidCBORText(t *testing.T) {
+	if _, err := decodeCBOR([]byte{0x61, 0xff}); err == nil {
+		t.Fatal("invalid UTF-8 accepted as CBOR text")
+	}
+}
+
+func TestAbsentSandboxCredentialsPreserveSenderFallback(t *testing.T) {
+	sandbox, err := loadSenderForTopic("example.app", "", "")
+	if err != nil || sandbox != nil {
+		t.Fatalf("missing sandbox credentials returned a non-nil sender: %v", err)
+	}
+	production := &apnspush.Sender{}
+	app := AppConfig{AllowSandbox: true, ProductionSender: production, SandboxSender: sandbox}
+	if got := app.SenderForEnv("sandbox"); got != production {
+		t.Fatal("sandbox sender did not fall back to the configured sender")
 	}
 }

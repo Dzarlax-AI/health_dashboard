@@ -19,12 +19,12 @@ func (h *Handler) buildNotificationPreferencesResponse(r *http.Request, db *stor
 	}
 	cfg := db.GetNotifyConfig(defaults)
 	prefs := storage.GetPushCategoryPreferences(db)
-	activeDevices, err := db.CountActivePushDevices(r.Context())
+	apnsConfigured := h.apnsTransport != nil
+	transportMode := h.apnsTransport.EffectiveMode()
+	activeDevices, err := db.CountActivePushDevices(r.Context(), transportMode)
 	if err != nil {
 		activeDevices = 0
 	}
-	apnsConfigured := h.apnsTransport != nil
-	transportMode := h.apnsTransport.EffectiveMode()
 	relayURL := ""
 	if transportMode == apnspush.TransportModeRelay && h.apnsTransport != nil {
 		relayURL = h.apnsTransport.RelayURL

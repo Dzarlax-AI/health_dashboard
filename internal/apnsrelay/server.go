@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"health-receiver/internal/apnspush"
 	"health-receiver/internal/storage"
 )
 
@@ -137,10 +138,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	s.metricsMu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"grants_active":        activeByApp,
-		"attest_register":      attest,
-		"deliveries_total":     deliveries,
-		"rate_limited_total":   rateLimited,
+		"grants_active":      activeByApp,
+		"attest_register":    attest,
+		"deliveries_total":   deliveries,
+		"rate_limited_total": rateLimited,
 	})
 }
 
@@ -607,26 +608,26 @@ func (s *Server) handleDeliver(w http.ResponseWriter, r *http.Request) {
 	// Validate strict delivery boundaries against the grant.
 	inboxItemID, err := uuid.Parse(strings.TrimSpace(req.InboxItemID))
 	if err != nil || inboxItemID == uuid.Nil {
-		s.incDeliveryMetric(app.AppID, req.Kind, OutcomeRejected)
+		s.incDeliveryMetric(app.AppID, "invalid", OutcomeRejected)
 		writeJSON(w, http.StatusBadRequest, DeliveryResponse{Status: http.StatusBadRequest, Outcome: OutcomeRejected, Reason: "invalid_inbox_item_id"})
 		return
 	}
 	regID, err := uuid.Parse(strings.TrimSpace(req.RegID))
 	if err != nil || regID == uuid.Nil || regID != grant.RegID {
-		s.incDeliveryMetric(app.AppID, req.Kind, OutcomeRejected)
+		s.incDeliveryMetric(app.AppID, "invalid", OutcomeRejected)
 		writeJSON(w, http.StatusForbidden, DeliveryResponse{Status: http.StatusForbidden, Outcome: OutcomeRejected, Reason: "reg_id_mismatch"})
 		return
 	}
 	apnsID, err := uuid.Parse(strings.TrimSpace(req.APNsID))
 	if err != nil || apnsID == uuid.Nil {
-		s.incDeliveryMetric(app.AppID, req.Kind, OutcomeRejected)
+		s.incDeliveryMetric(app.AppID, "invalid", OutcomeRejected)
 		writeJSON(w, http.StatusBadRequest, DeliveryResponse{Status: http.StatusBadRequest, Outcome: OutcomeRejected, Reason: "invalid_apns_id"})
 		return
 	}
 	now := s.currentTime()
 	exp := time.Unix(req.ExpiresAt, 0).UTC()
 	if !exp.After(now) || exp.After(now.Add(maxDeliveryTTL)) {
-		s.incDeliveryMetric(app.AppID, req.Kind, OutcomeRejected)
+		s.incDeliveryMetric(app.AppID, "invalid", OutcomeRejected)
 		writeJSON(w, http.StatusBadRequest, DeliveryResponse{Status: http.StatusBadRequest, Outcome: OutcomeRejected, Reason: "invalid_expires_at"})
 		return
 	}
@@ -635,7 +636,7 @@ func (s *Server) handleDeliver(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrKindUnsupportedForGrant) {
 			reason = "kind_unsupported_for_grant"
 		}
-		s.incDeliveryMetric(app.AppID, req.Kind, OutcomeRejected)
+		s.incDeliveryMetric(app.AppID, "invalid", OutcomeRejected)
 		writeJSON(w, http.StatusBadRequest, DeliveryResponse{Status: http.StatusBadRequest, Outcome: OutcomeRejected, Reason: reason})
 		return
 	}
@@ -690,6 +691,15 @@ func (s *Server) handleDeliver(w http.ResponseWriter, r *http.Request) {
 	collapseID := app.Policy.BuildCollapseID(req.Kind, inboxItemID)
 
 	res, sendErr := sender.Send(r.Context(), grant.APNsEnv, grant.APNsToken, apnsID.String(), "alert", collapseID, 10, exp, payload)
+	if errors.Is(sendErr, apnspush.ErrPreSend) || errors.Is(sendErr, apnspush.ErrCredential) {
+		s.incDeliveryMetric(app.AppID, req.Kind, OutcomeRetryablePreSend)
+		w.Header().Set("Retry-After", "60")
+		writeJSON(w, http.StatusServiceUnavailable, DeliveryResponse{
+			Status: http.StatusServiceUnavailable, Outcome: OutcomeRetryablePreSend,
+			Reason: "apns_sender_unavailable", RetryAfterSeconds: 60,
+		})
+		return
+	}
 	if sendErr != nil {
 		// Transport outcome between Relay and Apple is unknown after dispatch:
 		// MUST be returned as ambiguous (504) so the caller never blindly retries.

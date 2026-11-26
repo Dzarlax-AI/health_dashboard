@@ -40,7 +40,9 @@ func TestPushRelayRegistrationAndPreferencesModes(t *testing.T) {
 		t.Fatalf("GET preferences (none) status=%d", recNone.Code)
 	}
 	var prefsNone clientapi.NotificationPreferencesResponse
-	_ = json.Unmarshal(recNone.Body.Bytes(), &prefsNone)
+	if err := json.Unmarshal(recNone.Body.Bytes(), &prefsNone); err != nil {
+		t.Fatal(err)
+	}
 	if prefsNone.APNsPushConfigured || prefsNone.APNSPushEnabled || prefsNone.APNsTransportMode != apnspush.TransportModeNone || prefsNone.APNsRelayURL != "" {
 		t.Fatalf("unexpected none preferences: %+v", prefsNone)
 	}
@@ -58,7 +60,9 @@ func TestPushRelayRegistrationAndPreferencesModes(t *testing.T) {
 		t.Fatalf("GET preferences (relay) status=%d", recRelayPrefs.Code)
 	}
 	var prefsRelay clientapi.NotificationPreferencesResponse
-	_ = json.Unmarshal(recRelayPrefs.Body.Bytes(), &prefsRelay)
+	if err := json.Unmarshal(recRelayPrefs.Body.Bytes(), &prefsRelay); err != nil {
+		t.Fatal(err)
+	}
 	if !prefsRelay.APNsPushConfigured || !prefsRelay.APNSPushEnabled || prefsRelay.APNsTransportMode != apnspush.TransportModeRelay || prefsRelay.APNsRelayURL != "https://push.dzarlax.dev" {
 		t.Fatalf("unexpected relay preferences: %+v", prefsRelay)
 	}
@@ -108,7 +112,9 @@ func TestPushRelayRegistrationAndPreferencesModes(t *testing.T) {
 		t.Fatalf("relay POST /api/push/devices status=%d body=%s", recReg.Code, recReg.Body.String())
 	}
 	var regResp clientapi.PushDeviceRegisterResponse
-	_ = json.Unmarshal(recReg.Body.Bytes(), &regResp)
+	if err := json.Unmarshal(recReg.Body.Bytes(), &regResp); err != nil {
+		t.Fatal(err)
+	}
 	if regResp.BindingID != bindingID || !regResp.Enabled || regResp.RegistrationVersion != 1 {
 		t.Fatalf("unexpected relay register response: %+v", regResp)
 	}
@@ -120,7 +126,9 @@ func TestPushRelayRegistrationAndPreferencesModes(t *testing.T) {
 		t.Fatalf("relay replay status=%d body=%s", recReplay.Code, recReplay.Body.String())
 	}
 	var replayResp clientapi.PushDeviceRegisterResponse
-	_ = json.Unmarshal(recReplay.Body.Bytes(), &replayResp)
+	if err := json.Unmarshal(recReplay.Body.Bytes(), &replayResp); err != nil {
+		t.Fatal(err)
+	}
 	if replayResp.BindingID != bindingID || replayResp.RegistrationVersion != 1 {
 		t.Fatalf("unexpected relay replay response: %+v", replayResp)
 	}
@@ -135,11 +143,23 @@ func TestPushRelayRegistrationAndPreferencesModes(t *testing.T) {
 	}
 
 	// Publish an evening report and deliver through mock Relay server!
-	var gotAuth string
-	var gotReq apnspush.RelayDeliveryRequest
+	type capturedRequest struct {
+		auth    string
+		request apnspush.RelayDeliveryRequest
+	}
+	requests := make(chan capturedRequest, 1)
 	mockRelay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		_ = json.NewDecoder(r.Body).Decode(&gotReq)
+		var gotReq apnspush.RelayDeliveryRequest
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			http.Error(w, "invalid Relay request", http.StatusBadRequest)
+			return
+		}
+		select {
+		case requests <- capturedRequest{r.Header.Get("Authorization"), gotReq}:
+		default:
+			http.Error(w, "duplicate Relay request", http.StatusConflict)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(apnspush.RelayDeliveryResult{
@@ -164,7 +184,13 @@ func TestPushRelayRegistrationAndPreferencesModes(t *testing.T) {
 	if err := apnspush.ProcessTenantDeliveries(ctx, db, testRelayClient, storage.NotifyConfig{}, time.Now(), 10); err != nil {
 		t.Fatalf("ProcessTenantDeliveries via relay: %v", err)
 	}
-	if gotAuth != "Bearer "+secret || gotReq.Kind != storage.InboxKindEveningReport || gotReq.RegID != bindingID.String() || gotReq.InboxItemID != itemID.String() {
-		t.Fatalf("unexpected relay delivery call: auth=%q req=%+v", gotAuth, gotReq)
+	select {
+	case got := <-requests:
+		if got.auth != "Bearer "+secret || got.request.Kind != storage.InboxKindEveningReport ||
+			got.request.RegID != bindingID.String() || got.request.InboxItemID != itemID.String() {
+			t.Fatalf("unexpected relay delivery request: %+v", got.request)
+		}
+	default:
+		t.Fatal("expected a Relay delivery request")
 	}
 }

@@ -391,7 +391,7 @@ func deliverClaimed(ctx context.Context, db *storage.DB, sender TransportSender,
 			APNsID:      d.APNsID.String(),
 			ExpiresAt:   d.ExpiresAt.UTC().Unix(),
 		})
-		outcome = classifyRelayOutcome(d, attemptID, relayRes, sendErr, now)
+		outcome = classifyRelayOutcome(d, attemptID, relayRes, sendErr, time.Now().UTC())
 	} else {
 		res, sendErr := sender.Send(ctx, d.APNsEnv, d.DeviceAPNsToken, d.APNsID.String(), "alert", d.CollapseID, 10, d.ExpiresAt, directPayload)
 		outcome = classifyAPNsOutcome(d, attemptID, res, sendErr, now)
@@ -446,7 +446,8 @@ func classifyRelayOutcome(d *storage.ClaimedPushDelivery, attemptID uuid.UUID, r
 			out.Reason = "GrantInvalid"
 		}
 		out.InvalidateDevice = true
-		out.AppleInvalidatedAt = res.AppleInvalidated
+		// Relay has already checked Apple's token timestamp; local invalidation
+		// is fenced by the binding's registration version and token hash.
 		return out
 
 	case RelayOutcomeRetryableTokenRotated:
@@ -467,7 +468,7 @@ func classifyRelayOutcome(d *storage.ClaimedPushDelivery, attemptID uuid.UUID, r
 		return out
 
 	case RelayOutcomeRetryablePreSend:
-		delay := retryDelay429(d.Attempts, res.RetryAfter)
+		delay := max(retryDelay429(d.Attempts, res.RetryAfter), res.RetryAfter)
 		out.AttemptStatus = storage.PushAttemptStatusRetryableFailed
 		if d.Attempts < storage.PushMaxAttempts && now.Add(delay).Before(d.ExpiresAt) {
 			out.DeliveryState = storage.PushDeliveryStateRetryWait

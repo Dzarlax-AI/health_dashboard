@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -44,15 +45,15 @@ type RelayDeliveryRequest struct {
 }
 
 type RelayDeliveryResult struct {
-	Status            int        `json:"status"`
-	Outcome           string     `json:"outcome"`
-	Reason            string     `json:"reason,omitempty"`
-	APNsID            string     `json:"apns_id,omitempty"`
-	APNsStatus        int        `json:"apns_status,omitempty"`
-	RetryAfterSeconds int        `json:"retry_after_seconds,omitempty"`
-	Timestamp         *int64     `json:"timestamp,omitempty"`
+	Status            int           `json:"status"`
+	Outcome           string        `json:"outcome"`
+	Reason            string        `json:"reason,omitempty"`
+	APNsID            string        `json:"apns_id,omitempty"`
+	APNsStatus        int           `json:"apns_status,omitempty"`
+	RetryAfterSeconds int           `json:"retry_after_seconds,omitempty"`
+	Timestamp         *int64        `json:"timestamp,omitempty"`
 	RetryAfter        time.Duration `json:"-"`
-	AppleInvalidated  *time.Time `json:"-"`
+	AppleInvalidated  *time.Time    `json:"-"`
 }
 
 // RelayTransportSender is implemented by *RelayClient and mock relay senders.
@@ -97,10 +98,8 @@ func ValidateRelayURL(raw string, allowInsecureLocal bool) (string, error) {
 		if lowerHost == "localhost" || strings.HasSuffix(lowerHost, ".localhost") || strings.HasSuffix(lowerHost, ".local") {
 			return "", errors.New("APNS_RELAY_URL must not target localhost")
 		}
-		if ip := net.ParseIP(host); ip != nil {
-			if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-				return "", errors.New("APNS_RELAY_URL must not target private or loopback IP")
-			}
+		if ip, err := netip.ParseAddr(host); err == nil && !isPublicRelayIP(ip) {
+			return "", errors.New("APNS_RELAY_URL must not target private or loopback IP")
 		}
 	} else if !strings.EqualFold(u.Scheme, "https") && !strings.EqualFold(u.Scheme, "http") {
 		return "", errors.New("APNS_RELAY_URL must use http or https")
@@ -118,16 +117,60 @@ func NewRelayClient(rawURL, topic string, allowInsecureLocal bool) (*RelayClient
 	if topic == "" {
 		topic = DefaultTopic
 	}
+	var transport http.RoundTripper
+	if !allowInsecureLocal {
+		tr := &http.Transport{
+			DialContext:         dialPublicRelay,
+			ForceAttemptHTTP2:   true,
+			MaxIdleConns:        10,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+		}
+		transport = tr
+	}
 	return &RelayClient{
 		RelayURL: origin,
 		Topic:    topic,
 		Client: &http.Client{
-			Timeout: 15 * time.Second,
+			Timeout:   15 * time.Second,
+			Transport: transport,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return errors.New("redirects are forbidden for APNs relay")
 			},
 		},
 	}, nil
+}
+
+var sharedIPv4 = netip.MustParsePrefix("100.64.0.0/10")
+
+func isPublicRelayIP(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return ip.Zone() == "" && ip.IsGlobalUnicast() && !ip.IsPrivate() && !sharedIPv4.Contains(ip)
+}
+
+func dialPublicRelay(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	var dialer net.Dialer
+	lastErr := errors.New("APNs relay hostname does not resolve to a public address")
+	for _, ip := range addresses {
+		if !isPublicRelayIP(ip) {
+			continue
+		}
+		// Dial the checked address directly to avoid resolving the name again.
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 func (c *RelayClient) EffectiveTopic() string {
@@ -189,16 +232,18 @@ func (c *RelayClient) SendRelay(ctx context.Context, req RelayDeliveryRequest) (
 	}
 	defer resp.Body.Close()
 
+	out.Status = resp.StatusCode
 	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if readErr != nil {
 		return out, errors.New("relay response outcome unknown")
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return out, errors.New("relay response malformed; outcome unknown")
+		return RelayDeliveryResult{Status: resp.StatusCode}, errors.New("relay response malformed; outcome unknown")
 	}
-	if out.Status == 0 {
-		out.Status = resp.StatusCode
+	if out.Status != 0 && out.Status != resp.StatusCode {
+		return RelayDeliveryResult{Status: resp.StatusCode}, errors.New("relay response status mismatch; outcome unknown")
 	}
+	out.Status = resp.StatusCode
 	if out.RetryAfterSeconds > 0 {
 		out.RetryAfter = time.Duration(out.RetryAfterSeconds) * time.Second
 	} else if ra := strings.TrimSpace(resp.Header.Get("Retry-After")); ra != "" {

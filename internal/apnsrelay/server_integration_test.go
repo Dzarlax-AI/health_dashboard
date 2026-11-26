@@ -24,9 +24,9 @@ import (
 )
 
 type mockAPNsSender struct {
-	mu       sync.Mutex
-	calls    []mockAPNsCall
-	handler  func(call mockAPNsCall) (apnspush.Result, error)
+	mu      sync.Mutex
+	calls   []mockAPNsCall
+	handler func(call mockAPNsCall) (apnspush.Result, error)
 }
 
 type mockAPNsCall struct {
@@ -828,5 +828,61 @@ func TestRelayCreateGrantReplayUpdatesRotatedAPNsToken(t *testing.T) {
 	}
 	if gotTok := h.healthSender.lastCall().Token; gotTok != tokB {
 		t.Fatalf("expected delivery to rotated token B %q, got stale token %q", tokB, gotTok)
+	}
+}
+
+func TestRelayRevokesOnlyOneServerGrantForSameDevice(t *testing.T) {
+	h := newRelayHarness(t)
+	dev := newTestDeviceKey(t)
+	h.registerDevice(AppIDHealthSync, DefaultHealthAppleAppID, dev, aaguidProduction)
+
+	type serverGrant struct {
+		ID     uuid.UUID `json:"grant_id"`
+		RegID  uuid.UUID `json:"-"`
+		Secret string    `json:"-"`
+	}
+	create := func() serverGrant {
+		t.Helper()
+		result := serverGrant{RegID: uuid.New(), Secret: uuid.NewString()}
+		clientKey := uuid.NewString()
+		hash := sha256.Sum256([]byte(result.Secret))
+		rec := h.signedRequest(http.MethodPost, "/v1/grants", AppIDHealthSync, DefaultHealthAppleAppID, dev, OpGrantCreate, func(ch ChallengeResponse) any {
+			return CreateGrantRequest{
+				AppID: AppIDHealthSync, Op: OpGrantCreate, ResourceID: clientKey,
+				ChallengeID: ch.ChallengeID.String(), Nonce: ch.Nonce, ClientGrantKey: clientKey,
+				RegID: result.RegID.String(), SecretHash: base64.RawURLEncoding.EncodeToString(hash[:]),
+				InboxContractVersion: storage.InboxContractV2,
+				APNsToken:            strings.Repeat("a1", 32), APNsEnv: storage.PushEnvProduction,
+			}
+		})
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || rec.Code != http.StatusOK || result.ID == uuid.Nil {
+			t.Fatalf("create grant: status=%d, decode=%v", rec.Code, err)
+		}
+		return result
+	}
+	send := func(grant serverGrant, binding uuid.UUID) int {
+		t.Helper()
+		return h.doJSON(http.MethodPost, "/v1/deliveries", DeliveryRequest{
+			Kind: storage.InboxKindEveningReport, Locale: "en",
+			InboxItemID: uuid.NewString(), RegID: binding.String(), APNsID: uuid.NewString(),
+			ExpiresAt: h.curNow.Add(time.Hour).Unix(),
+		}, map[string]string{"Authorization": "Bearer " + grant.Secret}).Code
+	}
+
+	serverA, serverB := create(), create()
+	if status := send(serverA, serverB.RegID); status != http.StatusForbidden {
+		t.Fatalf("server A used server B binding: status=%d", status)
+	}
+	rec := h.signedRequest(http.MethodDelete, "/v1/grants/"+serverA.ID.String(), AppIDHealthSync, DefaultHealthAppleAppID, dev, OpGrantRevoke, func(ch ChallengeResponse) any {
+		return RevokeGrantRequest{AppID: AppIDHealthSync, Op: OpGrantRevoke, ResourceID: serverA.ID.String(), ChallengeID: ch.ChallengeID.String(), Nonce: ch.Nonce}
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke server A: status=%d", rec.Code)
+	}
+	if status := send(serverA, serverA.RegID); status != http.StatusGone {
+		t.Fatalf("server A delivery after revocation: status=%d", status)
+	}
+	if status := send(serverB, serverB.RegID); status != http.StatusOK {
+		t.Fatalf("server B delivery after revoking server A: status=%d", status)
 	}
 }

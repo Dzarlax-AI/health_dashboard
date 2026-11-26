@@ -24,6 +24,7 @@ var (
 
 	aaguidProduction  = []byte{'a', 'p', 'p', 'a', 't', 't', 'e', 's', 't', 0, 0, 0, 0, 0, 0, 0}
 	aaguidDevelopment = []byte("appattestdevelop")
+	aaguidSandbox     = []byte("appattestsandbox")
 
 	ErrAttestationFailed = errors.New("app attest verification failed")
 	ErrAssertionFailed   = errors.New("app attest assertion failed")
@@ -33,12 +34,12 @@ const (
 	AttestEnvProduction  = "production"
 	AttestEnvDevelopment = "development"
 
-	OpAttestRegister        = "attest.register"
-	OpGrantCreate           = "grant.create"
-	OpGrantRefresh          = "grant.refresh"
-	OpGrantRevoke           = "grant.revoke"
+	OpAttestRegister         = "attest.register"
+	OpGrantCreate            = "grant.create"
+	OpGrantRefresh           = "grant.refresh"
+	OpGrantRevoke            = "grant.revoke"
 	OpGrantCancelByClientKey = "grant.cancel_by_client_key"
-	OpDeviceUpdateToken     = "device.update_token"
+	OpDeviceUpdateToken      = "device.update_token"
 )
 
 func ValidAttestOp(op string) bool {
@@ -64,10 +65,10 @@ func DefaultAppleRootCAPool() (*x509.CertPool, error) {
 func CanonicalRegisterPayload(appID, keyID, challengeID, nonceB64 string) []byte {
 	type payload struct {
 		AppID       string `json:"app_id"`
-		Op          string `json:"op"`
-		ResourceID  string `json:"resource_id"`
 		ChallengeID string `json:"challenge_id"`
 		Nonce       string `json:"nonce"`
+		Op          string `json:"op"`
+		ResourceID  string `json:"resource_id"`
 	}
 	raw, _ := json.Marshal(payload{
 		AppID:       appID,
@@ -227,7 +228,7 @@ func (v *AppAttestVerifier) VerifyAttestation(appleAppID, keyID string, clientDa
 	switch {
 	case bytes.Equal(aaguid, aaguidProduction):
 		attestEnv = AttestEnvProduction
-	case bytes.Equal(aaguid, aaguidDevelopment):
+	case bytes.Equal(aaguid, aaguidDevelopment), bytes.Equal(aaguid, aaguidSandbox):
 		if !allowSandbox {
 			return nil, fmt.Errorf("%w: development aaguid disabled for app", ErrAttestationFailed)
 		}

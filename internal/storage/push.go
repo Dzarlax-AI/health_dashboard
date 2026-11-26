@@ -219,6 +219,19 @@ func apnsPushEnabled(ctx context.Context, s *DB) bool {
 	return err == nil && enabled
 }
 
+func ValidRelayGrantSecret(secret string) bool {
+	if len(secret) < 16 || len(secret) > 512 {
+		return false
+	}
+	for _, c := range secret {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
+			c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 func ValidAPNsToken(token string) bool {
 	if len(token) < 64 || len(token) > 1024 || len(token)%2 != 0 {
 		return false
@@ -316,7 +329,7 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 		if in.RelayGrantID == nil || *in.RelayGrantID == uuid.Nil {
 			return PushDevice{}, errors.New("invalid relay_grant_id")
 		}
-		if len(in.RelayGrantSecret) < 16 || len(in.RelayGrantSecret) > 512 {
+		if !ValidRelayGrantSecret(in.RelayGrantSecret) {
 			return PushDevice{}, errors.New("invalid relay_grant_secret")
 		}
 		in.APNsToken = ""
@@ -982,11 +995,16 @@ func (s *DB) CompletePushDelivery(ctx context.Context, in CompletePushDeliveryIn
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE push_deliveries
-		   SET state = $3,
+		   SET state = CASE
+		         WHEN $3 = 'retry_wait' AND clock_timestamp() + ($6 * INTERVAL '1 second') >= expires_at
+		           THEN 'rejected'
+		         ELSE $3
+		       END,
 		       status_code = COALESCE($4, status_code),
 		       error_reason = $5,
 		       next_attempt_at = CASE
-		         WHEN $3 = 'retry_wait' THEN clock_timestamp() + ($6 * INTERVAL '1 second')
+		         WHEN $3 = 'retry_wait' AND clock_timestamp() + ($6 * INTERVAL '1 second') < expires_at
+		           THEN clock_timestamp() + ($6 * INTERVAL '1 second')
 		         ELSE next_attempt_at
 		       END,
 		       lease_token = NULL,
@@ -1091,14 +1109,15 @@ func (s *DB) ListPushDevices(ctx context.Context) ([]PushDevice, error) {
 
 // CountActivePushDevices returns the number of enabled, non-invalidated, non-stale
 // APNs devices registered for this tenant.
-func (s *DB) CountActivePushDevices(ctx context.Context) (int, error) {
+func (s *DB) CountActivePushDevices(ctx context.Context, mode string) (int, error) {
 	var count int
 	err := s.pool.QueryRow(ctx, `
 		SELECT count(*)
 		  FROM push_devices
 		 WHERE enabled
 		   AND invalidated_at IS NULL
-		   AND last_seen_at > clock_timestamp() - INTERVAL '180 days'`).Scan(&count)
+		   AND last_seen_at > clock_timestamp() - INTERVAL '180 days'
+		   AND ($1::text = '' OR transport_mode = $1)`, mode).Scan(&count)
 	return count, err
 }
 
