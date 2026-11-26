@@ -127,6 +127,13 @@ func maybeFireDaytime(ctx context.Context, bot *Bot, db *storage.DB, cfg Config,
 	if !cfg.DaytimeEnabled || (!inboxEnabled && !cfg.Enabled()) || !daytimeWindow(now, cfg.location(), cfg.DaytimeStartHour, cfg.DaytimeEndHour) {
 		return
 	}
+	if inboxEnabled && bot != nil && cfg.Enabled() {
+		today := now.In(cfg.location()).Format("2006-01-02")
+		_, _ = RetryPendingInboxTelegramReports(
+			ctx, bot, db, cfg, today,
+			[]string{storage.InboxKindSleepUpdate, storage.InboxKindGuidanceChange},
+		)
+	}
 	if maybeFireSleepAnalysisUpdate(ctx, bot, db, cfg, baseURL, now, loadBriefing) {
 		return
 	}

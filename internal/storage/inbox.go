@@ -435,10 +435,11 @@ func (s *DB) ReserveReportDeliveryForExisting(ctx context.Context, reportID uuid
 		var state string
 		var reservedAt time.Time
 		var existingLease uuid.UUID
-		if err = tx.QueryRow(ctx, `SELECT status, reserved_at, lease_token FROM notification_deliveries WHERE delivery_key = $1 FOR UPDATE`, *deliveryKey).Scan(&state, &reservedAt, &existingLease); err != nil {
+		var errorCode string
+		if err = tx.QueryRow(ctx, `SELECT status, reserved_at, lease_token, COALESCE(error_code, '') FROM notification_deliveries WHERE delivery_key = $1 FOR UPDATE`, *deliveryKey).Scan(&state, &reservedAt, &existingLease, &errorCode); err != nil {
 			return uuid.Nil, false, err
 		}
-		retryable := state == "failed"
+		retryable := state == "failed" && errorCode != "telegram_disabled"
 		if state == "reserved" && time.Since(reservedAt) >= 30*time.Second {
 			var noAttempt bool
 			err = tx.QueryRow(ctx, `

@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -412,5 +414,144 @@ func TestStage3ReadAtAndReadAllWatermarkSemantics(t *testing.T) {
 	}
 	if item3.ReadAt != nil {
 		t.Fatalf("expected id3 (> snapshotAt) to stay unread, got read_at=%v", item3.ReadAt)
+	}
+}
+
+func TestStage3PushRegistrationAttemptV22ToV23ReplayCompatibility(t *testing.T) {
+	db := setupStage3DB(t)
+	ctx := context.Background()
+
+	deviceID := uuid.New()
+	bindingID := uuid.New()
+	attemptID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("uuid.NewV7: %v", err)
+	}
+	token := "4444444444444444444444444444444444444444444444444444444444444444"
+	tokenHash := sha256.Sum256([]byte(token))
+	// Exact pre-migration v22 4-field request hash (before inbox_contract_version existed).
+	v22Hash := sha256.Sum256([]byte(strings.Join([]string{token, PushEnvSandbox, "com.dzarlax.health-sync", "ru"}, "\x00")))
+
+	// Seed a v22-era push_devices + push_registration_attempts pair as it exists
+	// right after ALTER TABLE push_devices ADD COLUMN inbox_contract_version DEFAULT 1.
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO push_devices (
+			device_id, binding_id, apns_token, token_hash, apns_env, bundle_id, locale,
+			enabled, registration_version, inbox_contract_version, last_seen_at, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, 3, 1, clock_timestamp(), clock_timestamp(), clock_timestamp())`,
+		deviceID, bindingID, token, tokenHash[:], PushEnvSandbox, "com.dzarlax.health-sync", "ru",
+	); err != nil {
+		t.Fatalf("seed v22 push_devices row: %v", err)
+	}
+	if _, err := db.pool.Exec(ctx, `
+		INSERT INTO push_registration_attempts (
+			id, device_id, request_hash, binding_id, registration_version, apns_env, created_at
+		) VALUES ($1, $2, $3, $4, 3, $5, clock_timestamp())`,
+		attemptID, deviceID, v22Hash[:], bindingID, PushEnvSandbox,
+	); err != nil {
+		t.Fatalf("seed v22 push_registration_attempts row: %v", err)
+	}
+
+	// TestFlight 33 retries the lost POST after migration (inbox_contract_version omitted / 0).
+	replayed, err := db.UpsertPushDevice(ctx, UpsertPushDeviceInput{
+		DeviceID:              deviceID,
+		APNsToken:             token,
+		APNsEnv:               PushEnvSandbox,
+		BundleID:              "com.dzarlax.health-sync",
+		Locale:                "ru",
+		InboxContractVersion:  0,
+		RegistrationAttemptID: attemptID,
+	})
+	if err != nil {
+		t.Fatalf("expected v22 TestFlight 33 replay to succeed after v23 migration, got: %v", err)
+	}
+	if replayed.BindingID != bindingID || replayed.RegistrationVersion != 3 || replayed.InboxContractVersion != InboxContractV1 {
+		t.Fatalf("unexpected replayed device: %+v", replayed)
+	}
+
+	// Explicit inbox_contract_version=1 replay must also match the v22 receipt.
+	replayedExplicitV1, err := db.UpsertPushDevice(ctx, UpsertPushDeviceInput{
+		DeviceID:              deviceID,
+		APNsToken:             token,
+		APNsEnv:               PushEnvSandbox,
+		BundleID:              "com.dzarlax.health-sync",
+		Locale:                "ru",
+		InboxContractVersion:  InboxContractV1,
+		RegistrationAttemptID: attemptID,
+	})
+	if err != nil || replayedExplicitV1.BindingID != bindingID {
+		t.Fatalf("expected explicit v1 replay to succeed: dev=%+v err=%v", replayedExplicitV1, err)
+	}
+
+	// Replaying the same attempt_id with inbox_contract_version=2 must fail with 409 Conflict.
+	_, err = db.UpsertPushDevice(ctx, UpsertPushDeviceInput{
+		DeviceID:              deviceID,
+		APNsToken:             token,
+		APNsEnv:               PushEnvSandbox,
+		BundleID:              "com.dzarlax.health-sync",
+		Locale:                "ru",
+		InboxContractVersion:  InboxContractV2,
+		RegistrationAttemptID: attemptID,
+	})
+	if !errors.Is(err, ErrPushRegistrationAttemptConflict) {
+		t.Fatalf("expected ErrPushRegistrationAttemptConflict for v2 payload on v1 attempt, got %v", err)
+	}
+}
+
+func TestStage3ListRetryableInboxTelegramReportsBypassesGatesAndRespectsAmbiguous(t *testing.T) {
+	db := setupStage3DB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	today := now.Format("2006-01-02")
+
+	// 1. Evening report -> failed (provider_rejected): MUST be retryable.
+	evKey := "report:evening:" + today
+	ev := ReportHistory{DeliveryKey: &evKey, Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Evening"}
+	if id, _, err := db.PublishEveningReportToInbox(ctx, &ev); err != nil || id == uuid.Nil {
+		t.Fatalf("publish evening: id=%s err=%v", id, err)
+	}
+	evToken, ok, err := db.ReserveReportDeliveryForExisting(ctx, ev.ID)
+	if err != nil || !ok {
+		t.Fatalf("reserve evening: ok=%v err=%v", ok, err)
+	}
+	evAtt, err := db.ReserveReportAttempt(ctx, ev.ID, "html", ev.PlainBody, evToken)
+	if err != nil {
+		t.Fatalf("reserve evening attempt: %v", err)
+	}
+	_ = db.CompleteReportAttempt(ctx, evAtt, "failed", "provider_rejected", nil)
+	_ = db.CompleteNotificationDelivery(ctx, evKey, evToken, "failed", "provider_rejected")
+
+	// 2. Sleep update -> ambiguous: MUST NEVER be listed or reserved.
+	su := ReportHistory{Kind: "proactive", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Sleep update"}
+	if id, _, err := db.PublishProactiveToInbox(ctx, &su, "sleep_update:ep1:1", "proactive:daytime:ep1:1", nil, now, time.UTC, InboxKindSleepUpdate, 8*time.Hour); err != nil || id == uuid.Nil {
+		t.Fatalf("publish sleep update: id=%s err=%v", id, err)
+	}
+	suToken, ok, err := db.ReserveReportDeliveryForExisting(ctx, su.ID)
+	if err != nil || !ok {
+		t.Fatalf("reserve sleep update: ok=%v err=%v", ok, err)
+	}
+	_ = db.CompleteNotificationDelivery(ctx, *su.DeliveryKey, suToken, "ambiguous", "transport_ambiguous")
+
+	// 3. Weekly digest -> failed with telegram_disabled: MUST NOT be listed or reserved.
+	wd := ReportHistory{Kind: "proactive", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Digest"}
+	if id, _, err := db.PublishProactiveToInbox(ctx, &wd, "weekly_digest:"+today, "proactive:weekly_digest:"+today, nil, now.Add(2*time.Hour), time.UTC, InboxKindWeeklyDigest, 24*time.Hour); err != nil || id == uuid.Nil {
+		t.Fatalf("publish digest: id=%s err=%v", id, err)
+	}
+	wdToken, ok, err := db.ReserveReportDeliveryForExisting(ctx, wd.ID)
+	if err != nil || !ok {
+		t.Fatalf("reserve digest: ok=%v err=%v", ok, err)
+	}
+	_ = db.CompleteNotificationDelivery(ctx, *wd.DeliveryKey, wdToken, "failed", "telegram_disabled")
+
+	if _, reservedDisabled, err := db.ReserveReportDeliveryForExisting(ctx, wd.ID); err != nil || reservedDisabled {
+		t.Fatalf("expected telegram_disabled delivery not to be re-reserved: reserved=%v err=%v", reservedDisabled, err)
+	}
+
+	retryable, err := db.ListRetryableInboxTelegramReports(ctx, today, nil, 3, 20)
+	if err != nil {
+		t.Fatalf("ListRetryableInboxTelegramReports: %v", err)
+	}
+	if len(retryable) != 1 || retryable[0].ID != ev.ID {
+		t.Fatalf("expected only failed evening report (%s) to be retryable, got %+v", ev.ID, retryable)
 	}
 }

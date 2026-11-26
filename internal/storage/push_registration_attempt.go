@@ -48,6 +48,12 @@ func pushRegistrationRequestHash(in UpsertPushDeviceInput) [sha256.Size]byte {
 	if contractVer < InboxContractV1 {
 		contractVer = InboxContractV1
 	}
+	if contractVer == InboxContractV1 {
+		// Keep the exact v22 4-field hash for contract v1 so TestFlight 33
+		// retries of POSTs accepted before a v22 -> v23 migration replay cleanly
+		// instead of returning 409 Conflict.
+		return sha256.Sum256([]byte(strings.Join([]string{in.APNsToken, in.APNsEnv, in.BundleID, in.Locale}, "\x00")))
+	}
 	return sha256.Sum256([]byte(strings.Join([]string{in.APNsToken, in.APNsEnv, in.BundleID, in.Locale, strconv.Itoa(contractVer)}, "\x00")))
 }
 
@@ -71,12 +77,13 @@ func replayPushRegistration(ctx context.Context, tx pgx.Tx, in UpsertPushDeviceI
 	// the binding still belongs to that version before reporting it as active.
 	err = tx.QueryRow(ctx, `
 		SELECT a.device_id, a.request_hash, a.binding_id, a.registration_version, a.apns_env, a.cancelled_at,
-		       COALESCE(d.enabled AND d.invalidated_at IS NULL, FALSE)
+		       COALESCE(d.enabled AND d.invalidated_at IS NULL, FALSE),
+		       COALESCE(d.inbox_contract_version, 1)
 		  FROM push_registration_attempts a
 		  LEFT JOIN push_devices d ON d.device_id = a.device_id AND d.binding_id = a.binding_id
 		                           AND d.registration_version = a.registration_version
 		 WHERE a.id = $1`, in.RegistrationAttemptID).
-		Scan(&result.DeviceID, &savedHash, &binding, &version, &env, &cancelled, &result.Enabled)
+		Scan(&result.DeviceID, &savedHash, &binding, &version, &env, &cancelled, &result.Enabled, &result.InboxContractVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PushDevice{}, false, nil
 	}

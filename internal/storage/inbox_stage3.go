@@ -74,6 +74,86 @@ func (s *DB) GetPublishedEveningInboxReport(ctx context.Context, localDate strin
 	return &h, inboxID, nil
 }
 
+// ListRetryableInboxTelegramReports returns today's already-published Inbox
+// reports whose Telegram delivery previously failed with a retryable error (or
+// stalled in `reserved` for >=30s with zero transport attempts). It bypasses
+// publication cadence, snapshot, and proactive episode/budget gates while
+// strictly excluding sent, ambiguous, and telegram_disabled deliveries.
+func (s *DB) ListRetryableInboxTelegramReports(ctx context.Context, localDate string, kinds []string, maxProviderRejections, limit int) ([]ReportHistory, error) {
+	if s == nil || localDate == "" {
+		return nil, nil
+	}
+	if len(kinds) == 0 {
+		kinds = []string{
+			InboxKindEveningReport,
+			InboxKindSleepUpdate,
+			InboxKindGuidanceChange,
+			InboxKindWeeklyDigest,
+			InboxKindNudge,
+		}
+	}
+	if maxProviderRejections <= 0 {
+		maxProviderRejections = 3
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT h.id, h.delivery_key, h.revision, h.kind, h.local_date, h.timezone, h.language,
+		       h.prepared_at, h.scheduled_at, h.is_preview, h.plain_body, h.rich_body,
+		       h.decision_id, h.context, h.ai_metadata, h.fallback_reason, h.format_revision
+		  FROM inbox_items i
+		  JOIN report_history h ON h.id = i.report_id
+		  JOIN notification_deliveries d ON d.delivery_key = h.delivery_key
+		 WHERE i.local_date = $1
+		   AND i.kind = ANY($2)
+		   AND i.report_id IS NOT NULL
+		   AND h.is_preview = FALSE
+		   AND h.delivery_key IS NOT NULL
+		   AND (
+		       (
+		           d.status = 'failed'
+		           AND COALESCE(d.error_code, '') <> 'telegram_disabled'
+		           AND (
+		               COALESCE(d.error_code, '') <> 'provider_rejected'
+		               OR (
+		                   SELECT COUNT(DISTINCT COALESCE(a.lease_token, a.id))
+		                     FROM report_delivery_attempts a
+		                    WHERE a.report_id = h.id
+		                      AND a.status = 'failed'
+		                      AND a.error_code = 'provider_rejected'
+		               ) < $3
+		           )
+		       )
+		       OR (
+		           d.status = 'reserved'
+		           AND d.reserved_at <= clock_timestamp() - INTERVAL '30 seconds'
+		           AND NOT EXISTS (
+		               SELECT 1
+		                 FROM report_delivery_attempts a
+		                 JOIN report_history rh ON rh.id = a.report_id
+		                WHERE rh.delivery_key = h.delivery_key
+		                  AND (a.lease_token = d.lease_token OR (a.lease_token IS NULL AND a.reserved_at >= d.reserved_at))
+		           )
+		       )
+		   )
+		 ORDER BY i.created_at ASC, i.id ASC
+		 LIMIT $4`, localDate, kinds, maxProviderRejections, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ReportHistory
+	for rows.Next() {
+		var h ReportHistory
+		if err := scanReportHistoryRow(rows, &h); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
 // PublishEveningReportToInbox atomically archives a durable evening report in
 // report_history, inserts its inbox_items card, and enqueues APNs push deliveries
 // on first creation only. It intentionally does NOT write notification_deliveries

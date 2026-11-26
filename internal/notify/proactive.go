@@ -124,8 +124,20 @@ func Register(p ProactiveNotification) {
 // catastrophic registry failure leaves the user with their normal
 // morning summary.
 func MaybeFireAll(bot *Bot, db *storage.DB, cfg Config, baseURL string) {
-	if !storage.IsInAppInboxEnabled(db) && !cfg.Enabled() {
+	inboxEnabled := storage.IsInAppInboxEnabled(db)
+	if !inboxEnabled && !cfg.Enabled() {
 		return
+	}
+	if inboxEnabled && bot != nil && cfg.Enabled() {
+		retryCtx, retryCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		today := time.Now().In(cfg.location()).Format("2006-01-02")
+		if _, err := RetryPendingInboxTelegramReports(
+			retryCtx, bot, db, cfg, today,
+			[]string{storage.InboxKindWeeklyDigest, storage.InboxKindNudge},
+		); err != nil {
+			log.Printf("proactive telegram retry: %v", err)
+		}
+		retryCancel()
 	}
 	registryMu.Lock()
 	rules := make([]ProactiveNotification, len(registry))
