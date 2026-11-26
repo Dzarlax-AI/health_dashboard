@@ -629,3 +629,74 @@ func TestStage3ProviderRejectedCapEnforcedUnderLockInReserveReportDeliveryForExi
 		t.Fatalf("expected 0 retryable reports after hitting provider_rejected cap, got len=%d err=%v", len(remaining), err)
 	}
 }
+
+func TestStage3OptedOutPublicationSuppressesExistingLegacyFailures(t *testing.T) {
+	db := setupStage3DB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	today := now.Format("2006-01-02")
+	eveningKey := "report:evening:" + today
+	proactiveKey := "proactive:weekly_digest:" + today
+	for _, key := range []string{eveningKey, proactiveKey} {
+		lease, reserved, err := db.ReserveNotificationDelivery(ctx, key)
+		if err != nil || !reserved {
+			t.Fatalf("reserve legacy delivery: reserved=%v err=%v", reserved, err)
+		}
+		if err := db.CompleteNotificationDelivery(ctx, key, lease, "failed", "provider_rejected"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	evening := ReportHistory{Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Evening", DeliveryKey: &eveningKey}
+	if _, created, err := db.PublishEveningReportToInbox(ctx, &evening, false); err != nil || !created {
+		t.Fatalf("publish evening: created=%v err=%v", created, err)
+	}
+	proactive := ReportHistory{Kind: "proactive", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Digest"}
+	if _, created, err := db.PublishProactiveToInbox(ctx, &proactive, "weekly_digest:"+today, proactiveKey, nil, now, time.UTC, InboxKindWeeklyDigest, time.Hour, false); err != nil || !created {
+		t.Fatalf("publish digest: created=%v err=%v", created, err)
+	}
+	rows, err := db.ListRetryableInboxTelegramReports(ctx, today, nil, MaxReportProviderRejectionCycles, 20)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("expected neither opted-out legacy failure to be retried, got %d: %v", len(rows), err)
+	}
+	for _, reportID := range []uuid.UUID{evening.ID, proactive.ID} {
+		if _, reserved, err := db.ReserveReportDeliveryForExisting(ctx, reportID); err != nil || reserved {
+			t.Fatalf("opt-out must also block direct reservation: reserved=%v err=%v", reserved, err)
+		}
+	}
+}
+
+func TestStage3ConcurrentTelegramAndInboxWakePublicationKeepsOneProposal(t *testing.T) {
+	db := setupStage3DB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	today := now.Format("2006-01-02")
+	type result struct {
+		fb  DerivedMetricFeedback
+		err error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	go func() {
+		<-start
+		_, fb, _, err := db.EnsureCanonicalWakeFeedbackPrompt(ctx, today, json.RawMessage(`"2026-11-26T07:15:00Z"`), "high", now)
+		results <- result{fb, err}
+	}()
+	go func() {
+		<-start
+		fb, err := db.EnsureTelegramWakeFeedback(ctx, today, json.RawMessage(`"2026-11-26T08:10:00Z"`), "high", now)
+		results <- result{fb, err}
+	}()
+	close(start)
+	first, second := <-results, <-results
+	if first.err != nil || second.err != nil {
+		t.Fatalf("publish feedback: %v / %v", first.err, second.err)
+	}
+	if first.fb.Channel != second.fb.Channel || string(first.fb.ProposedValue) != string(second.fb.ProposedValue) {
+		t.Fatalf("publication paths disagreed on proposal: %s/%s vs %s/%s", first.fb.Channel, first.fb.ProposedValue, second.fb.Channel, second.fb.ProposedValue)
+	}
+	var rows int
+	if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM derived_metric_feedback WHERE metric_name=$1 AND metric_date=$2::date`, DerivedMetricWakeTime, today).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("expected one canonical row, got %d: %v", rows, err)
+	}
+}

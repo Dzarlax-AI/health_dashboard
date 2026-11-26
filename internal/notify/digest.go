@@ -34,7 +34,15 @@ func SendWeeklyDigestForce(bot *Bot, db *storage.DB, cfg Config, days int) error
 	if err != nil {
 		return err
 	}
-	return bot.Send(formatWeeklyDigest(stats, cfg.Lang))
+	message := formatWeeklyDigest(stats, cfg.Lang)
+	enabled, checkErr = checkTelegramNotificationsEnabled(db)
+	if checkErr != nil {
+		return checkErr
+	}
+	if !enabled {
+		return ErrTelegramNotificationsDisabled
+	}
+	return bot.Send(message)
 }
 
 func formatWeeklyDigest(s storage.WeeklyQualityStats, lang string) string {

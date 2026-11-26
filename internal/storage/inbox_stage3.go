@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	eveningReportPushTTL  = 6 * time.Hour
-	daytimeUpdatePushTTL  = 8 * time.Hour
-	digestNudgePushTTL    = 24 * time.Hour
-	wakeFeedbackPushTTL   = 12 * time.Hour
+	eveningReportPushTTL = 6 * time.Hour
+	daytimeUpdatePushTTL = 8 * time.Hour
+	digestNudgePushTTL   = 24 * time.Hour
+	wakeFeedbackPushTTL  = 12 * time.Hour
 )
 
 func EveningReportInboxLogicalKey(localDate string) string {
@@ -72,6 +72,42 @@ func (s *DB) GetPublishedEveningInboxReport(ctx context.Context, localDate strin
 		return nil, uuid.Nil, err
 	}
 	return &h, inboxID, nil
+}
+
+// markInboxTelegramDisabledTx fences an old retryable legacy delivery when an
+// Inbox publication elects to skip Telegram. A completed or potentially sent
+// delivery keeps its original outcome.
+func markInboxTelegramDisabledTx(ctx context.Context, tx pgx.Tx, key string) error {
+	token := uuid.New()
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO notification_deliveries
+			(delivery_key, status, lease_token, reserved_at, completed_at, error_code)
+		VALUES ($1, 'failed', $2, clock_timestamp(), clock_timestamp(), 'telegram_disabled')
+		ON CONFLICT DO NOTHING`, key, token)
+	if err != nil || tag.RowsAffected() != 0 {
+		return err
+	}
+	// Acquire the delivery row before taking the snapshot used to check for
+	// attempts. ReserveReportAttempt takes the same lock before recording one.
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM notification_deliveries WHERE delivery_key=$1 FOR UPDATE`, key).Scan(&status); err != nil {
+		return err
+	}
+	if status != "failed" && status != "reserved" {
+		return nil
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE notification_deliveries d
+		   SET status = 'failed', lease_token = $2, completed_at = clock_timestamp(),
+		       error_code = 'telegram_disabled'
+		 WHERE d.delivery_key = $1
+		   AND (d.status = 'failed' OR NOT EXISTS (
+			SELECT 1 FROM report_delivery_attempts a
+			JOIN report_history h ON h.id = a.report_id
+			WHERE h.delivery_key = d.delivery_key
+			  AND (a.lease_token = d.lease_token OR (a.lease_token IS NULL AND a.reserved_at >= d.reserved_at))
+		   ))`, key, token)
+	return err
 }
 
 // ListRetryableInboxTelegramReports returns today's already-published Inbox
@@ -243,10 +279,7 @@ func (s *DB) PublishEveningReportToInbox(ctx context.Context, h *ReportHistory, 
 		return uuid.Nil, false, err
 	}
 	if !telegramDeliveryAllowed || !telegramEnabled {
-		if _, err = tx.Exec(ctx, `
-			INSERT INTO notification_deliveries(delivery_key, status, lease_token, reserved_at, completed_at, error_code)
-			VALUES($1, 'failed', $2, clock_timestamp(), clock_timestamp(), 'telegram_disabled')
-			ON CONFLICT DO NOTHING`, *h.DeliveryKey, uuid.New()); err != nil {
+		if err = markInboxTelegramDisabledTx(ctx, tx, *h.DeliveryKey); err != nil {
 			return uuid.Nil, false, err
 		}
 	}
@@ -468,10 +501,7 @@ func (s *DB) PublishProactiveToInbox(
 		return uuid.Nil, false, err
 	}
 	if !telegramDeliveryAllowed || !telegramEnabled {
-		if _, err = tx.Exec(ctx, `
-			INSERT INTO notification_deliveries(delivery_key, status, lease_token, reserved_at, completed_at, error_code)
-			VALUES($1, 'failed', $2, clock_timestamp(), clock_timestamp(), 'telegram_disabled')
-			ON CONFLICT DO NOTHING`, deliveryKey, uuid.New()); err != nil {
+		if err = markInboxTelegramDisabledTx(ctx, tx, deliveryKey); err != nil {
 			return uuid.Nil, false, err
 		}
 	}
@@ -530,6 +560,26 @@ func selectCanonicalWakeFeedbackForUpdateTx(ctx context.Context, tx pgx.Tx, date
 	return fb, true, nil
 }
 
+// GetCanonicalWakeFeedback returns the same feedback selected by both answer paths.
+func (s *DB) GetCanonicalWakeFeedback(ctx context.Context, date string) (DerivedMetricFeedback, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return DerivedMetricFeedback{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	fb, found, err := selectCanonicalWakeFeedbackForUpdateTx(ctx, tx, date)
+	if err != nil {
+		return fb, false, err
+	}
+	return fb, found, tx.Commit(ctx)
+}
+
+// EnsureTelegramWakeFeedback reserves the proposal before a Telegram-only send.
+func (s *DB) EnsureTelegramWakeFeedback(ctx context.Context, date string, proposed json.RawMessage, confidence string, promptedAt time.Time) (DerivedMetricFeedback, error) {
+	_, fb, _, err := s.ensureCanonicalWakeFeedback(ctx, date, proposed, confidence, promptedAt, false)
+	return fb, err
+}
+
 // EnsureCanonicalWakeFeedbackPrompt atomically creates (or reuses) the single
 // canonical wake_time feedback row for date, its inbox_items card, and (on first
 // creation only) APNs push deliveries.
@@ -540,6 +590,10 @@ func (s *DB) EnsureCanonicalWakeFeedbackPrompt(
 	confidence string,
 	promptedAt time.Time,
 ) (uuid.UUID, DerivedMetricFeedback, bool, error) {
+	return s.ensureCanonicalWakeFeedback(ctx, date, proposedValue, confidence, promptedAt, true)
+}
+
+func (s *DB) ensureCanonicalWakeFeedback(ctx context.Context, date string, proposedValue json.RawMessage, confidence string, promptedAt time.Time, publishInbox bool) (uuid.UUID, DerivedMetricFeedback, bool, error) {
 	if _, err := time.Parse("2006-01-02", date); err != nil {
 		return uuid.Nil, DerivedMetricFeedback{}, false, fmt.Errorf("date must be YYYY-MM-DD: %w", err)
 	}
@@ -549,7 +603,7 @@ func (s *DB) EnsureCanonicalWakeFeedbackPrompt(
 	if promptedAt.IsZero() {
 		promptedAt = time.Now().UTC()
 	}
-	pushEnabled := apnsPushEnabled(ctx, s)
+	pushEnabled := publishInbox && apnsPushEnabled(ctx, s)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return uuid.Nil, DerivedMetricFeedback{}, false, err
@@ -566,24 +620,32 @@ func (s *DB) EnsureCanonicalWakeFeedbackPrompt(
 	}
 	created := false
 	if !found {
+		channel := DerivedMetricFeedbackTelegram
+		if publishInbox {
+			channel = DerivedMetricFeedbackInbox
+		}
 		meta := json.RawMessage(fmt.Sprintf(`{"confidence":%q}`, confidence))
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO derived_metric_feedback (
 				metric_name, metric_date, channel, proposed_value, prompted_at, metadata
 			) VALUES ($1, $2::date, $3, $4, $5, $6)`,
-			DerivedMetricWakeTime, date, DerivedMetricFeedbackInbox, json.RawMessage(proposedValue), promptedAt, meta,
+			DerivedMetricWakeTime, date, channel, json.RawMessage(proposedValue), promptedAt, meta,
 		); err != nil {
 			return uuid.Nil, DerivedMetricFeedback{}, false, err
 		}
 		fb = DerivedMetricFeedback{
 			MetricName:    DerivedMetricWakeTime,
 			MetricDate:    date,
-			Channel:       DerivedMetricFeedbackInbox,
+			Channel:       channel,
 			ProposedValue: proposedValue,
 			PromptedAt:    promptedAt,
 			Metadata:      meta,
 		}
 		created = true
+	}
+
+	if !publishInbox {
+		return uuid.Nil, fb, created, tx.Commit(ctx)
 	}
 
 	logicalKey := WakeFeedbackInboxLogicalKey(date)

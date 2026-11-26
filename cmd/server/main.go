@@ -1464,43 +1464,59 @@ func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, 
 }
 
 func trySendWakeFeedbackAfterMorning(bot *notify.Bot, db *storage.DB, cfg notify.Config, date string, now time.Time, inboxEnabled, telegramAvailable bool) bool {
-	if db == nil || !storage.IsWakeFeedbackEnabled(db) {
+	if db == nil {
 		return false
 	}
 	if inboxEnabled {
-		metric, err := db.GetDerivedMetric(storage.DerivedMetricWakeTime, date)
-		if err != nil || metric == nil || metric.ValueTimestamp == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		fb, exists, err := db.GetCanonicalWakeFeedback(ctx, date)
+		if err != nil {
+			log.Printf("wake feedback: load existing prompt for %s: %v", date, err)
 			return false
 		}
-		var meta struct {
-			Confidence string `json:"confidence"`
+		if !storage.IsWakeFeedbackEnabled(db) {
+			return exists
 		}
-		_ = json.Unmarshal(metric.Metadata, &meta)
-		if meta.Confidence == storage.WakeConfidenceHigh {
-			recent, err := db.HasRecentDerivedMetricFeedback(storage.DerivedMetricWakeTime, "", date, 7)
-			if err != nil || recent {
+		proposed := fb.ProposedValue
+		confidence := ""
+		if !exists {
+			metric, err := db.GetDerivedMetric(storage.DerivedMetricWakeTime, date)
+			if err != nil || metric == nil || metric.ValueTimestamp == nil {
+				return false
+			}
+			var meta struct {
+				Confidence string `json:"confidence"`
+			}
+			_ = json.Unmarshal(metric.Metadata, &meta)
+			confidence = meta.Confidence
+			if confidence == storage.WakeConfidenceHigh {
+				recent, err := db.HasRecentDerivedMetricFeedback(storage.DerivedMetricWakeTime, "", date, 7)
+				if err != nil || recent {
+					return false
+				}
+			}
+			proposed, err = json.Marshal(metric.ValueTimestamp)
+			if err != nil {
 				return false
 			}
 		}
-		proposed, _ := json.Marshal(metric.ValueTimestamp.Format(time.RFC3339))
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_, fb, created, err := db.EnsureCanonicalWakeFeedbackPrompt(ctx, date, proposed, meta.Confidence, now)
-		cancel()
+		_, fb, created, err := db.EnsureCanonicalWakeFeedbackPrompt(ctx, date, proposed, confidence, now)
 		if err != nil {
 			log.Printf("wake feedback: ensure inbox prompt for %s: %v", date, err)
-			return false
+			return exists
 		}
 		if created {
 			log.Printf("wake feedback: published inbox prompt for %s", date)
 		}
-		if telegramAvailable && bot != nil && fb.PromptMessageID == nil && fb.Response == "" {
-			if err := notify.DeliverWakeFeedbackToTelegram(bot, db, cfg.Lang, date, metric.ValueTimestamp.In(now.Location())); err != nil {
+		if telegramAvailable && bot != nil {
+			if err := notify.DeliverWakeFeedbackToTelegram(bot, db, cfg.Lang, fb, now.Location()); err != nil {
 				log.Printf("wake feedback: telegram delivery for %s: %v", date, err)
 			}
 		}
-		return created || fb.PromptMessageID != nil
+		return true
 	}
-	if !telegramAvailable || bot == nil {
+	if !telegramAvailable || bot == nil || !storage.IsWakeFeedbackEnabled(db) {
 		return false
 	}
 	sent, err := notify.SendWakeFeedbackPrompt(bot, db, cfg.Lang, date, now)

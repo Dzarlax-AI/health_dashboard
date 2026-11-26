@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -43,11 +44,11 @@ func setupStage3NotifyDB(t *testing.T) *storage.DB {
 		t.Fatalf("MigrateSchemaContractContext: %v", err)
 	}
 	if err := db.SaveSettings(map[string]string{
-		"timezone":                              "UTC",
-		"report_lang":                           "en",
-		storage.SettingInAppInboxEnabled:        "true",
-		storage.SettingTelegramNotificationsEnabled:    "true",
-		storage.SettingAPNSPushEnabled:          "false",
+		"timezone":                       "UTC",
+		"report_lang":                    "en",
+		storage.SettingInAppInboxEnabled: "true",
+		storage.SettingTelegramNotificationsEnabled: "true",
+		storage.SettingAPNSPushEnabled:              "false",
 	}); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
@@ -462,5 +463,63 @@ func TestStage3TelegramFlagReadErrorFailsClosedAndDefersRetryably(t *testing.T) 
 	retried, err := RetryPendingInboxTelegramReports(ctx, bot, db, cfg, today, []string{storage.InboxKindEveningReport})
 	if err != nil || retried != 1 || httpCalls.Load() != 1 {
 		t.Fatalf("expected deferred report to succeed after DB recovery, retried=%d calls=%d err=%v", retried, httpCalls.Load(), err)
+	}
+}
+
+func TestStage3TelegramOnlyWakeSenderReusesStoredInboxProposal(t *testing.T) {
+	db := setupStage3NotifyDB(t)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+	date := now.Format("2006-01-02")
+	proposed := json.RawMessage(`"2026-11-26T07:15:00Z"`)
+	if _, _, created, err := db.EnsureCanonicalWakeFeedbackPrompt(ctx, date, proposed, storage.WakeConfidenceHigh, now); err != nil || !created {
+		t.Fatalf("publish Inbox wake feedback: created=%v err=%v", created, err)
+	}
+	if err := db.SaveSettings(map[string]string{storage.SettingInAppInboxEnabled: "false"}); err != nil {
+		t.Fatal(err)
+	}
+
+	bot := &wakeFeedbackBot{}
+	sent, err := SendWakeFeedbackPrompt(bot, db, "en", date, now)
+	if err != nil || !sent {
+		t.Fatalf("Telegram-only wake feedback: sent=%v err=%v", sent, err)
+	}
+	if !strings.Contains(bot.text, "07:15") {
+		t.Fatalf("Telegram did not show the saved Inbox proposal: %q", bot.text)
+	}
+	fb, exists, err := db.GetCanonicalWakeFeedback(ctx, date)
+	if err != nil || !exists || fb.Channel != storage.DerivedMetricFeedbackInbox || fb.PromptMessageID == nil || *fb.PromptMessageID != 42 {
+		t.Fatalf("expected the original row with attached Telegram message: %+v exists=%v err=%v", fb, exists, err)
+	}
+	legacy, err := db.GetDerivedMetricFeedback(storage.DerivedMetricWakeTime, date, storage.DerivedMetricFeedbackTelegram)
+	if err != nil || legacy != nil {
+		t.Fatalf("unexpected second wake feedback row: %+v (%v)", legacy, err)
+	}
+}
+
+func TestStage3ForcedDigestRechecksTelegramAfterPreparingReport(t *testing.T) {
+	db := setupStage3NotifyDB(t)
+	var checks, calls atomic.Int32
+	oldBase := telegramAPIBase
+	defer func() { telegramAPIBase = oldBase }()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":42}}`)
+	}))
+	defer ts.Close()
+	telegramAPIBase = ts.URL
+	defer setCheckTelegramEnabledHook(func(ctx context.Context, store *storage.DB) (bool, error) {
+		if checks.Add(1) == 2 {
+			if err := store.SaveSettings(map[string]string{storage.SettingTelegramNotificationsEnabled: "false"}); err != nil {
+				return false, err
+			}
+		}
+		return storage.CheckTelegramNotificationsEnabled(ctx, store)
+	})()
+
+	cfg := Config{Token: "test-token", ChatID: "123456", Lang: "en"}
+	err := SendWeeklyDigestForce(NewBot(cfg.Token, cfg.ChatID), db, cfg, 7)
+	if !errors.Is(err, ErrTelegramNotificationsDisabled) || calls.Load() != 0 {
+		t.Fatalf("digest should be blocked at the last check: checks=%d calls=%d err=%v", checks.Load(), calls.Load(), err)
 	}
 }
