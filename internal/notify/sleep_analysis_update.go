@@ -140,7 +140,11 @@ func maybeFireSleepAnalysisUpdate(ctx context.Context, bot *Bot, db *storage.DB,
 	if storage.IsInAppInboxEnabled(db) {
 		inboxID, _, err := db.PublishProactiveToInbox(ctx, &h, "", "proactive:sleep-analysis:pending", &current.event, now, cfg.location(), storage.InboxKindSleepUpdate, 8*time.Hour)
 		if err == nil && inboxID != (storage.ReportHistory{}.ID) {
-			_, _ = DeliverArchivedReportToTelegram(db, bot, cfg, &h)
+			if bot != nil && cfg.Enabled() && storage.IsTelegramNotificationsEnabled(db) {
+				_, _ = DeliverArchivedReportToTelegram(db, bot, cfg, &h)
+			} else if h.DeliveryKey != nil {
+				_ = db.MarkReportTelegramDisabled(ctx, *h.DeliveryKey)
+			}
 		}
 		return true
 	}

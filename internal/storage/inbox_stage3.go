@@ -74,9 +74,25 @@ func (s *DB) GetPublishedEveningInboxReport(ctx context.Context, localDate strin
 	return &h, inboxID, nil
 }
 
+// MarkReportTelegramDisabled idempotently marks a durable report delivery key
+// as intentionally skipped because Telegram delivery was disabled or
+// unconfigured when the Inbox card was published, preventing retroactive sends
+// if Telegram is enabled later on the same day.
+func (s *DB) MarkReportTelegramDisabled(ctx context.Context, deliveryKey string) error {
+	if s == nil || deliveryKey == "" {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO notification_deliveries(delivery_key, status, lease_token, reserved_at, completed_at, error_code)
+		VALUES($1, 'failed', $2, clock_timestamp(), clock_timestamp(), 'telegram_disabled')
+		ON CONFLICT DO NOTHING`, deliveryKey, uuid.New())
+	return err
+}
+
 // ListRetryableInboxTelegramReports returns today's already-published Inbox
-// reports whose Telegram delivery previously failed with a retryable error (or
-// stalled in `reserved` for >=30s with zero transport attempts). It bypasses
+// reports whose Telegram delivery has not yet been reserved (e.g. crash between
+// Inbox commit and first reservation), previously failed with a retryable error,
+// or stalled in `reserved` for >=30s with zero transport attempts. It bypasses
 // publication cadence, snapshot, and proactive episode/budget gates while
 // strictly excluding sent, ambiguous, and telegram_disabled deliveries.
 func (s *DB) ListRetryableInboxTelegramReports(ctx context.Context, localDate string, kinds []string, maxProviderRejections, limit int) ([]ReportHistory, error) {
@@ -93,7 +109,7 @@ func (s *DB) ListRetryableInboxTelegramReports(ctx context.Context, localDate st
 		}
 	}
 	if maxProviderRejections <= 0 {
-		maxProviderRejections = 3
+		maxProviderRejections = MaxReportProviderRejectionCycles
 	}
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -104,14 +120,15 @@ func (s *DB) ListRetryableInboxTelegramReports(ctx context.Context, localDate st
 		       h.decision_id, h.context, h.ai_metadata, h.fallback_reason, h.format_revision
 		  FROM inbox_items i
 		  JOIN report_history h ON h.id = i.report_id
-		  JOIN notification_deliveries d ON d.delivery_key = h.delivery_key
+		  LEFT JOIN notification_deliveries d ON d.delivery_key = h.delivery_key
 		 WHERE i.local_date = $1
 		   AND i.kind = ANY($2)
 		   AND i.report_id IS NOT NULL
 		   AND h.is_preview = FALSE
 		   AND h.delivery_key IS NOT NULL
 		   AND (
-		       (
+		       d.delivery_key IS NULL
+		       OR (
 		           d.status = 'failed'
 		           AND COALESCE(d.error_code, '') <> 'telegram_disabled'
 		           AND (
@@ -119,7 +136,8 @@ func (s *DB) ListRetryableInboxTelegramReports(ctx context.Context, localDate st
 		               OR (
 		                   SELECT COUNT(DISTINCT COALESCE(a.lease_token, a.id))
 		                     FROM report_delivery_attempts a
-		                    WHERE a.report_id = h.id
+		                     JOIN report_history rh ON rh.id = a.report_id
+		                    WHERE rh.delivery_key = h.delivery_key
 		                      AND a.status = 'failed'
 		                      AND a.error_code = 'provider_rejected'
 		               ) < $3
@@ -229,6 +247,14 @@ func (s *DB) PublishEveningReportToInbox(ctx context.Context, h *ReportHistory) 
 	}
 	if pushEnabled {
 		if err = enqueuePushDeliveriesTx(ctx, tx, inboxID, InboxKindEveningReport, h.PreparedAt.Add(eveningReportPushTTL)); err != nil {
+			return uuid.Nil, false, err
+		}
+	}
+	if !IsTelegramNotificationsEnabled(s) {
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO notification_deliveries(delivery_key, status, lease_token, reserved_at, completed_at, error_code)
+			VALUES($1, 'failed', $2, clock_timestamp(), clock_timestamp(), 'telegram_disabled')
+			ON CONFLICT DO NOTHING`, *h.DeliveryKey, uuid.New()); err != nil {
 			return uuid.Nil, false, err
 		}
 	}
@@ -441,6 +467,14 @@ func (s *DB) PublishProactiveToInbox(
 	}
 	if pushEnabled {
 		if err = enqueuePushDeliveriesTx(ctx, tx, inboxID, inboxKind, now.UTC().Add(pushTTL)); err != nil {
+			return uuid.Nil, false, err
+		}
+	}
+	if !IsTelegramNotificationsEnabled(s) {
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO notification_deliveries(delivery_key, status, lease_token, reserved_at, completed_at, error_code)
+			VALUES($1, 'failed', $2, clock_timestamp(), clock_timestamp(), 'telegram_disabled')
+			ON CONFLICT DO NOTHING`, deliveryKey, uuid.New()); err != nil {
 			return uuid.Nil, false, err
 		}
 	}

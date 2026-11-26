@@ -401,10 +401,15 @@ func (s *DB) GetPublishedMorningInboxReport(ctx context.Context, localDate strin
 	return &h, inboxID, nil
 }
 
+// MaxReportProviderRejectionCycles bounds how many distinct delivery leases
+// may fail with provider_rejected before automatic retries stop.
+const MaxReportProviderRejectionCycles = 3
+
 // ReserveReportDeliveryForExisting acquires a durable delivery lease for an
 // already-archived report_history row without creating a new revision or Inbox
-// card. Retries are allowed on `failed` deliveries and on stale zero-attempt
-// reservations (>=30s with zero report_delivery_attempts for reportID).
+// card. Retries are allowed on `failed` deliveries (excluding telegram_disabled
+// and subject to MaxReportProviderRejectionCycles for provider_rejected) and on
+// stale zero-attempt reservations (>=30s with zero report_delivery_attempts).
 func (s *DB) ReserveReportDeliveryForExisting(ctx context.Context, reportID uuid.UUID) (uuid.UUID, bool, error) {
 	if reportID == uuid.Nil {
 		return uuid.Nil, false, errors.New("report id is required")
@@ -439,8 +444,26 @@ func (s *DB) ReserveReportDeliveryForExisting(ctx context.Context, reportID uuid
 		if err = tx.QueryRow(ctx, `SELECT status, reserved_at, lease_token, COALESCE(error_code, '') FROM notification_deliveries WHERE delivery_key = $1 FOR UPDATE`, *deliveryKey).Scan(&state, &reservedAt, &existingLease, &errorCode); err != nil {
 			return uuid.Nil, false, err
 		}
-		retryable := state == "failed" && errorCode != "telegram_disabled"
-		if state == "reserved" && time.Since(reservedAt) >= 30*time.Second {
+		retryable := false
+		switch {
+		case state == "failed" && errorCode == "telegram_disabled":
+			retryable = false
+		case state == "failed" && errorCode == "provider_rejected":
+			var failedCycles int
+			err = tx.QueryRow(ctx, `
+				SELECT COUNT(DISTINCT COALESCE(a.lease_token, a.id))
+				  FROM report_delivery_attempts a
+				  JOIN report_history rh ON rh.id = a.report_id
+				 WHERE rh.delivery_key = $1
+				   AND a.status = 'failed'
+				   AND a.error_code = 'provider_rejected'`, *deliveryKey).Scan(&failedCycles)
+			if err != nil {
+				return uuid.Nil, false, err
+			}
+			retryable = failedCycles < MaxReportProviderRejectionCycles
+		case state == "failed":
+			retryable = true
+		case state == "reserved" && time.Since(reservedAt) >= 30*time.Second:
 			var noAttempt bool
 			err = tx.QueryRow(ctx, `
 				SELECT NOT EXISTS(

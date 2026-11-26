@@ -188,7 +188,11 @@ func maybeFireDaytime(ctx context.Context, bot *Bot, db *storage.DB, cfg Config,
 		if err != nil || inboxID == (storage.ReportHistory{}.ID) {
 			return
 		}
-		_, _ = DeliverArchivedReportToTelegram(db, bot, cfg, &h)
+		if bot != nil && cfg.Enabled() && storage.IsTelegramNotificationsEnabled(db) {
+			_, _ = DeliverArchivedReportToTelegram(db, bot, cfg, &h)
+		} else if h.DeliveryKey != nil {
+			_ = db.MarkReportTelegramDisabled(ctx, *h.DeliveryKey)
+		}
 		return
 	}
 	token, reserved, err := db.ReserveProactive(ctx, &h, "proactive:daytime:pending", &current.event, now, cfg.location())

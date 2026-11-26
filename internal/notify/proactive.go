@@ -244,6 +244,8 @@ func fireOne(bot *Bot, db *storage.DB, cfg Config, baseURL string, p ProactiveNo
 			if _, sendErr := DeliverArchivedReportToTelegram(db, bot, cfg, &history); sendErr != nil {
 				log.Printf("proactive %s: telegram delivery error (inbox card preserved): %v", p.Name, sendErr)
 			}
+		} else if history.DeliveryKey != nil {
+			_ = db.MarkReportTelegramDisabled(ctx, *history.DeliveryKey)
 		}
 		return
 	}

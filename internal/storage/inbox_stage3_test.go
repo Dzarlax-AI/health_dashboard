@@ -555,3 +555,77 @@ func TestStage3ListRetryableInboxTelegramReportsBypassesGatesAndRespectsAmbiguou
 		t.Fatalf("expected only failed evening report (%s) to be retryable, got %+v", ev.ID, retryable)
 	}
 }
+
+func TestStage3ProviderRejectedCapEnforcedUnderLockInReserveReportDeliveryForExisting(t *testing.T) {
+	db := setupStage3DB(t)
+	ctx := context.Background()
+	today := time.Now().UTC().Format("2006-01-02")
+
+	evKey := "report:evening:" + today
+	ev := ReportHistory{DeliveryKey: &evKey, Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Evening"}
+	if id, _, err := db.PublishEveningReportToInbox(ctx, &ev); err != nil || id == uuid.Nil {
+		t.Fatalf("publish evening: id=%s err=%v", id, err)
+	}
+
+	// Cycle 1: rich + html both fail with provider_rejected under the SAME lease_token (counts as 1 cycle).
+	tok1, ok, err := db.ReserveReportDeliveryForExisting(ctx, ev.ID)
+	if err != nil || !ok {
+		t.Fatalf("cycle 1 reserve: ok=%v err=%v", ok, err)
+	}
+	a1Rich, err := db.ReserveReportAttempt(ctx, ev.ID, "rich", "<b>Evening</b>", tok1)
+	if err != nil {
+		t.Fatalf("cycle 1 rich attempt: %v", err)
+	}
+	_ = db.CompleteReportAttempt(ctx, a1Rich, "failed", "provider_rejected", nil)
+	a1HTML, err := db.ReserveReportAttempt(ctx, ev.ID, "html", "Evening", tok1)
+	if err != nil {
+		t.Fatalf("cycle 1 html attempt: %v", err)
+	}
+	_ = db.CompleteReportAttempt(ctx, a1HTML, "failed", "provider_rejected", nil)
+	_ = db.CompleteNotificationDelivery(ctx, evKey, tok1, "failed", "provider_rejected")
+
+	// Cycle 2: fails with provider_rejected.
+	tok2, ok, err := db.ReserveReportDeliveryForExisting(ctx, ev.ID)
+	if err != nil || !ok {
+		t.Fatalf("cycle 2 reserve: ok=%v err=%v", ok, err)
+	}
+	a2, err := db.ReserveReportAttempt(ctx, ev.ID, "html", "Evening", tok2)
+	if err != nil {
+		t.Fatalf("cycle 2 attempt: %v", err)
+	}
+	_ = db.CompleteReportAttempt(ctx, a2, "failed", "provider_rejected", nil)
+	_ = db.CompleteNotificationDelivery(ctx, evKey, tok2, "failed", "provider_rejected")
+
+	// Two callers both observe the report as retryable right before cycle 3.
+	batchA, err := db.ListRetryableInboxTelegramReports(ctx, today, []string{InboxKindEveningReport}, MaxReportProviderRejectionCycles, 10)
+	if err != nil || len(batchA) != 1 {
+		t.Fatalf("batchA before cycle 3: len=%d err=%v", len(batchA), err)
+	}
+	batchB, err := db.ListRetryableInboxTelegramReports(ctx, today, []string{InboxKindEveningReport}, MaxReportProviderRejectionCycles, 10)
+	if err != nil || len(batchB) != 1 {
+		t.Fatalf("batchB before cycle 3: len=%d err=%v", len(batchB), err)
+	}
+
+	// Caller A executes cycle 3 and fails with provider_rejected.
+	tok3, ok, err := db.ReserveReportDeliveryForExisting(ctx, batchA[0].ID)
+	if err != nil || !ok {
+		t.Fatalf("cycle 3 reserve: ok=%v err=%v", ok, err)
+	}
+	a3, err := db.ReserveReportAttempt(ctx, batchA[0].ID, "html", "Evening", tok3)
+	if err != nil {
+		t.Fatalf("cycle 3 attempt: %v", err)
+	}
+	_ = db.CompleteReportAttempt(ctx, a3, "failed", "provider_rejected", nil)
+	_ = db.CompleteNotificationDelivery(ctx, evKey, tok3, "failed", "provider_rejected")
+
+	// Caller B (holding the stale report_id selected before cycle 3) tries to reserve:
+	// ReserveReportDeliveryForExisting MUST enforce the cap under FOR UPDATE lock and refuse!
+	if _, ok4, err := db.ReserveReportDeliveryForExisting(ctx, batchB[0].ID); err != nil || ok4 {
+		t.Fatalf("expected 4th reservation after %d provider_rejected cycles to be denied, got ok=%v err=%v", MaxReportProviderRejectionCycles, ok4, err)
+	}
+
+	remaining, err := db.ListRetryableInboxTelegramReports(ctx, today, []string{InboxKindEveningReport}, MaxReportProviderRejectionCycles, 10)
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("expected 0 retryable reports after hitting provider_rejected cap, got len=%d err=%v", len(remaining), err)
+	}
+}

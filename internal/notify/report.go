@@ -452,6 +452,7 @@ func PublishEveningToInboxAndTelegram(ctx context.Context, bot *Bot, db *storage
 		return nil
 	}
 	if bot == nil || !cfg.Enabled() || !storage.IsTelegramNotificationsEnabled(db) {
+		_ = db.MarkReportTelegramDisabled(ctx, key)
 		return nil
 	}
 	_, err = DeliverArchivedReportToTelegram(db, bot, cfg, history)

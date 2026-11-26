@@ -281,3 +281,79 @@ func TestStage3InboxTelegramRetriesSucceedAfterFailureAndNeverRetryAmbiguous(t *
 		t.Fatalf("expected ONLY failed guidance_change to retry (not ambiguous sleep_update): retried=%d callsDelta=%d", retriedDaytime, httpCalls.Load()-callsBeforeDaytimeRetry)
 	}
 }
+
+func TestStage3CrashAfterInboxPublishBeforeFirstTelegramReservationRecoversWithoutRetroactiveOptOutSpam(t *testing.T) {
+	db := setupStage3NotifyDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	today := now.Format("2006-01-02")
+
+	var httpCalls atomic.Int32
+	oldBase := telegramAPIBase
+	defer func() { telegramAPIBase = oldBase }()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":999}}`)
+	}))
+	defer ts.Close()
+	telegramAPIBase = ts.URL
+
+	bot := NewBot("test-token", "123456")
+	cfg := Config{
+		Token:    "test-token",
+		ChatID:   "123456",
+		Lang:     "en",
+		Timezone: "UTC",
+	}
+
+	// Simulate crash right after Inbox publication commits (and cadence marker is saved)
+	// BEFORE DeliverArchivedReportToTelegram ever creates a notification_deliveries row.
+	evKey := "report:evening:" + today
+	ev := storage.ReportHistory{DeliveryKey: &evKey, Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Evening after crash"}
+	if id, created, err := db.PublishEveningReportToInbox(ctx, &ev); err != nil || !created || id == uuid.Nil {
+		t.Fatalf("publish evening: id=%s created=%v err=%v", id, created, err)
+	}
+	wd := storage.ReportHistory{Kind: "proactive", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Digest after crash"}
+	if id, created, err := db.PublishProactiveToInbox(ctx, &wd, "weekly_digest:"+today, "proactive:weekly_digest:"+today, nil, now, time.UTC, storage.InboxKindWeeklyDigest, 24*time.Hour); err != nil || !created || id == uuid.Nil {
+		t.Fatalf("publish digest: id=%s created=%v err=%v", id, created, err)
+	}
+	_ = db.SaveSettings(map[string]string{proactiveSentKey("weekly_digest"): today})
+
+	// Recovery tick discovers both unreserved cards (d.delivery_key IS NULL) and sends both to Telegram.
+	retried, err := RetryPendingInboxTelegramReports(ctx, bot, db, cfg, today, nil)
+	if err != nil {
+		t.Fatalf("RetryPendingInboxTelegramReports after crash: %v", err)
+	}
+	if retried != 2 || httpCalls.Load() != 2 {
+		t.Fatalf("expected both crash-stranded reports to be delivered on recovery tick, retried=%d calls=%d", retried, httpCalls.Load())
+	}
+	// Second recovery tick must be a complete no-op.
+	retried2, err := RetryPendingInboxTelegramReports(ctx, bot, db, cfg, today, nil)
+	if err != nil || retried2 != 0 || httpCalls.Load() != 2 {
+		t.Fatalf("expected 0 duplicate deliveries on second recovery tick, retried=%d calls=%d err=%v", retried2, httpCalls.Load(), err)
+	}
+
+	// Contrast case: card published while telegram_notifications_enabled=false must NOT
+	// be retroactively delivered if Telegram is re-enabled later on the same day.
+	optOutDB := setupStage3NotifyDB(t)
+	if err := optOutDB.SaveSettings(map[string]string{storage.SettingTelegramNotificationsEnabled: "false"}); err != nil {
+		t.Fatalf("disable telegram: %v", err)
+	}
+	optOutEvKey := "report:evening:" + today
+	optOutEv := storage.ReportHistory{DeliveryKey: &optOutEvKey, Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Opt-out evening"}
+	if id, created, err := optOutDB.PublishEveningReportToInbox(ctx, &optOutEv); err != nil || !created || id == uuid.Nil {
+		t.Fatalf("publish opt-out evening: id=%s created=%v err=%v", id, created, err)
+	}
+	if err := optOutDB.SaveSettings(map[string]string{storage.SettingTelegramNotificationsEnabled: "true"}); err != nil {
+		t.Fatalf("re-enable telegram: %v", err)
+	}
+	callsBeforeOptOutCheck := httpCalls.Load()
+	retriedOptOut, err := RetryPendingInboxTelegramReports(ctx, bot, optOutDB, cfg, today, nil)
+	if err != nil {
+		t.Fatalf("RetryPendingInboxTelegramReports on opt-out profile: %v", err)
+	}
+	if retriedOptOut != 0 || httpCalls.Load() != callsBeforeOptOutCheck {
+		t.Fatalf("expected opted-out card NOT to be retroactively sent after re-enable, retried=%d callsDelta=%d", retriedOptOut, httpCalls.Load()-callsBeforeOptOutCheck)
+	}
+}
