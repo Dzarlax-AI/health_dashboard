@@ -2865,6 +2865,7 @@
           "answered_channel": {
             "enum": [
               "ios_app",
+              "ios_push",
               "web",
               "telegram"
             ],
@@ -2976,6 +2977,7 @@
                 "answered_channel": {
                   "enum": [
                     "ios_app",
+                    "ios_push",
                     "web",
                     "telegram"
                   ],
@@ -3926,6 +3928,7 @@
           "channel": {
             "enum": [
               "ios_app",
+              "ios_push",
               "web"
             ],
             "type": "string"
@@ -3988,6 +3991,80 @@
         },
         "required": [
           "status"
+        ],
+        "type": "object"
+      },
+      "PushDeviceRegisterRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "apns_env": {
+            "enum": [
+              "production",
+              "sandbox"
+            ],
+            "type": "string"
+          },
+          "apns_token": {
+            "type": "string"
+          },
+          "bundle_id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "locale": {
+            "enum": [
+              "en",
+              "ru",
+              "sr"
+            ],
+            "type": "string"
+          },
+          "registration_attempt_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id",
+          "apns_token",
+          "apns_env",
+          "bundle_id",
+          "locale"
+        ],
+        "type": "object"
+      },
+      "PushDeviceRegisterResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "apns_env": {
+            "enum": [
+              "production",
+              "sandbox"
+            ],
+            "type": "string"
+          },
+          "binding_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "device_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "registration_version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "device_id",
+          "binding_id",
+          "enabled",
+          "registration_version",
+          "apns_env"
         ],
         "type": "object"
       },
@@ -10952,6 +11029,240 @@
           }
         },
         "summary": "Submit a canonical answer for an active morning check-in prompt"
+      }
+    },
+    "/api/push/devices": {
+      "post": {
+        "description": "An optional registration_attempt_id must be a UUIDv7. Retry the same request with that ID within seven days. Replays do not extend the registration lifetime.",
+        "operationId": "registerPushDevice",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushDeviceRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushDeviceRegisterResponse"
+                }
+              }
+            },
+            "description": "Successful tenant-scoped response."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid JSON, device_id, apns_token, apns_env, bundle_id, locale, or registration_attempt_id."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Direct APNs push is disabled for this profile or server."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Registration attempt cancelled, expired, superseded, or already used by another request."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The backend could not save the push device registration."
+          }
+        },
+        "summary": "Register or refresh an iOS APNs device binding for the authenticated profile"
+      }
+    },
+    "/api/push/devices/{device_id}": {
+      "delete": {
+        "description": "Supply exactly one of binding_id or registration_attempt_id. Cleanup works even when APNs delivery is disabled. Cancelling an attempt prevents late registration and only disables the version created by that attempt.",
+        "operationId": "deletePushDeviceBinding",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque binding UUID returned when this device registered with this profile.",
+            "in": "query",
+            "name": "binding_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "UUIDv7 saved before sending the registration request.",
+            "in": "query",
+            "name": "registration_attempt_id",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The binding is disabled, the attempt is cancelled, or the target is already absent."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Invalid device_id, binding_id, or registration_attempt_id."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Authentication required."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Registration attempt belongs to another device."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The backend could not complete push device cleanup."
+          }
+        },
+        "summary": "Disable an iOS push binding or cancel a registration attempt"
       }
     },
     "/api/readiness-history": {

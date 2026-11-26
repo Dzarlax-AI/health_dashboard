@@ -623,6 +623,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/push/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register or refresh an iOS APNs device binding for the authenticated profile
+         * @description An optional registration_attempt_id must be a UUIDv7. Retry the same request with that ID within seven days. Replays do not extend the registration lifetime.
+         */
+        post: operations["registerPushDevice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/push/devices/{device_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Disable an iOS push binding or cancel a registration attempt
+         * @description Supply exactly one of binding_id or registration_attempt_id. Cleanup works even when APNs delivery is disabled. Cancelling an attempt prevents late registration and only disables the version created by that attempt.
+         */
+        delete: operations["deletePushDeviceBinding"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/readiness-history": {
         parameters: {
             query?: never;
@@ -1619,7 +1659,7 @@ export interface components {
             /** Format: date-time */
             answered_at?: string;
             /** @enum {string} */
-            answered_channel?: "ios_app" | "web" | "telegram";
+            answered_channel?: "ios_app" | "ios_push" | "web" | "telegram";
             body?: string;
             /** Format: date-time */
             created_at: string;
@@ -1654,7 +1694,7 @@ export interface components {
                 /** Format: date-time */
                 answered_at?: string;
                 /** @enum {string} */
-                answered_channel?: "ios_app" | "web" | "telegram";
+                answered_channel?: "ios_app" | "ios_push" | "web" | "telegram";
                 /** Format: date-time */
                 created_at: string;
                 /** Format: date-time */
@@ -1868,7 +1908,7 @@ export interface components {
             /** @enum {string} */
             answer: "great" | "ok" | "meh" | "sick";
             /** @enum {string} */
-            channel: "ios_app" | "web";
+            channel: "ios_app" | "ios_push" | "web";
         };
         PromptAnswerResponse: {
             /** @enum {string} */
@@ -1883,6 +1923,26 @@ export interface components {
         PromptExpiredResponse: {
             /** @enum {string} */
             status: "expired";
+        };
+        PushDeviceRegisterRequest: {
+            /** @enum {string} */
+            apns_env: "production" | "sandbox";
+            apns_token: string;
+            bundle_id: string;
+            device_id: string;
+            /** @enum {string} */
+            locale: "en" | "ru" | "sr";
+            registration_attempt_id?: string;
+        };
+        PushDeviceRegisterResponse: {
+            /** @enum {string} */
+            apns_env: "production" | "sandbox";
+            /** Format: uuid */
+            binding_id: string;
+            /** Format: uuid */
+            device_id: string;
+            enabled: boolean;
+            registration_version: number;
         };
         QualityAuditResponse: {
             entries: {
@@ -5032,6 +5092,152 @@ export interface operations {
                 };
             };
             /** @description The backend could not save the prompt answer. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+        };
+    };
+    registerPushDevice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PushDeviceRegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful tenant-scoped response. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushDeviceRegisterResponse"];
+                };
+            };
+            /** @description Invalid JSON, device_id, apns_token, apns_env, bundle_id, locale, or registration_attempt_id. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Direct APNs push is disabled for this profile or server. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Registration attempt cancelled, expired, superseded, or already used by another request. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not save the push device registration. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+        };
+    };
+    deletePushDeviceBinding: {
+        parameters: {
+            query?: {
+                /** @description Opaque binding UUID returned when this device registered with this profile. */
+                binding_id?: string;
+                /** @description UUIDv7 saved before sending the registration request. */
+                registration_attempt_id?: string;
+            };
+            header?: never;
+            path: {
+                device_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The binding is disabled, the attempt is cancelled, or the target is already absent. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid device_id, binding_id, or registration_attempt_id. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description Registration attempt belongs to another device. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                    };
+                };
+            };
+            /** @description The backend could not complete push device cleanup. */
             500: {
                 headers: {
                     [name: string]: unknown;

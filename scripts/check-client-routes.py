@@ -103,6 +103,8 @@ def consumer_paths(sources):
                         path += "{id}"
                     elif path == "/api/prompts/" and ('\\(' in line or '${' in line) and "/answer" in line:
                         path += "{prompt_id}/answer"
+                    elif path == "/api/push/devices/" and ('\\(' in line or '${' in line):
+                        path += "{device_id}"
                 if path.endswith("/admin-readiness-onboarding/") and "+ step" in line:
                     found.update(path + step for step in re.findall(r"onboardingRefreshStep\('(step-[0-9-]+(?:plan)?)'\)", source))
                     continue

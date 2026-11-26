@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"health-receiver/internal/apnspush"
 	"health-receiver/internal/notify"
 	"health-receiver/internal/registry"
 	"health-receiver/internal/storage"
@@ -31,11 +32,14 @@ func morningLifecycleDue(cfg notify.Config, now time.Time, reportSent, hasChecki
 	return !now.Before(scheduled) || !now.Before(cfg.MorningCapTime(now))
 }
 
-func runMorningLifecycle(ctx context.Context, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig) {
+func runMorningLifecycle(ctx context.Context, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig, apnsSender apnspush.TransportSender) {
 	tick := func() {
 		// Expiry is persistence-only and must run through quiet hours and restart.
 		if err := expireOverdueMorningCheckins(db, mgr.CheckinSendMuFor(schema), time.Now()); err != nil {
 			log.Printf("check-in: overdue expiry: %v", err)
+		}
+		if err := apnspush.ProcessTenantDeliveries(ctx, db, apnsSender, defaults, time.Now(), 20); err != nil {
+			log.Printf("apns: process deliveries: %v", err)
 		}
 		cfg := db.GetNotifyConfig(defaults)
 		inboxEnabled := storage.IsInAppInboxEnabled(db)
@@ -53,7 +57,7 @@ func runMorningLifecycle(ctx context.Context, db *storage.DB, mgr *tenants.Manag
 		}
 		reportDone := morningReportDoneForLifecycle(db, today, inboxEnabled, telegramEnabled)
 		if morningLifecycleDue(ncfg, now, reportDone, row != nil) || (!reportDone && morningAIShouldPrewarm(ncfg, now, false)) {
-			makeMorningTrigger(ctx, db, mgr.MorningSendMuFor(schema), mgr, reg, schema, defaults)()
+			makeMorningTrigger(ctx, db, mgr.MorningSendMuFor(schema), mgr, reg, schema, defaults, apnsSender)()
 		}
 	}
 	tick()
@@ -70,16 +74,19 @@ func runMorningLifecycle(ctx context.Context, db *storage.DB, mgr *tenants.Manag
 }
 
 func morningReportDoneForLifecycle(db *storage.DB, today string, inboxEnabled, telegramEnabled bool) bool {
+	// If today's morning report is already settled (e.g., sent via Telegram
+	// before Inbox/APNs were enabled later in the day), the morning slot stays
+	// closed so enabling Inbox/APNs never triggers a retroactive evening report.
+	if db.HasSettledMorningReport(today) {
+		return true
+	}
 	if !inboxEnabled {
-		return db.HasSettledMorningReport(today)
+		return false
 	}
 	if !db.HasPublishedMorningInboxReport(today) {
 		return false
 	}
-	if !telegramEnabled {
-		return true
-	}
-	return db.HasSettledMorningReport(today)
+	return !telegramEnabled
 }
 
 // runTenantCheckinCycle shares only its own lock with callback persistence, so

@@ -33,6 +33,7 @@ import (
 
 	"health-receiver/internal/accessauth"
 	"health-receiver/internal/ai"
+	"health-receiver/internal/apnspush"
 	"health-receiver/internal/handler"
 	"health-receiver/internal/health"
 	"health-receiver/internal/mcpserver"
@@ -183,6 +184,15 @@ func main() {
 		return
 	}
 
+	apnsSender, apnsErr := apnspush.LoadSenderFromEnv()
+	if apnsErr != nil {
+		log.Printf("apns: configuration invalid; Direct APNs push disabled: %v", apnsErr)
+	}
+	if apnsSender != nil {
+		defer apnsSender.CloseIdleConnections()
+		log.Printf("apns: Direct APNs configured (topic=%s)", apnsSender.EffectiveTopic())
+	}
+
 	// Attempt to create health_registry schema and users table.
 	schemaErr := reg.EnsureSchema(ctx)
 	if schemaErr != nil {
@@ -233,7 +243,7 @@ func main() {
 		}
 
 		runSingleTenant(ctx, addr, baseURL, trustFwdAuth, trustedFwdAuthNets, apiKey, mgr, nil, mcpOAuth, mcpAccessConfig, mcpAccessVerifier,
-			legacyDB, "health", envNotifyDefaults, envAIDefaults, hrZones)
+			legacyDB, "health", envNotifyDefaults, envAIDefaults, hrZones, apnsSender)
 		return
 	}
 	if accessConfig != nil && reg.IsEmpty(ctx) {
@@ -321,7 +331,7 @@ func main() {
 		if err := mgr.VerifyTenantContract(ctx, u.SchemaName, db); err != nil {
 			log.Fatalf("startup tenant contract gate for %s: %v", u.SchemaName, err)
 		}
-		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL, todayDerived, startupBackfills)
+		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL, todayDerived, startupBackfills, apnsSender)
 	}
 
 	if len(users) == 0 {
@@ -361,6 +371,7 @@ func main() {
 	uiHandler.SetTrustedForwardAuthNetworkList(trustedFwdAuthNets)
 	uiHandler.SetSetupToken(strings.TrimSpace(os.Getenv("SETUP_TOKEN")))
 	uiHandler.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
+	uiHandler.ConfigureAPNs(apnsSender)
 	uiHandler.OnTenantCreated(func(schema string) {
 		db, err := mgr.GetOrCreate(ctx, schema)
 		if err != nil {
@@ -375,7 +386,7 @@ func main() {
 			log.Printf("new tenant contract gate for %s: %v", schema, err)
 			return
 		}
-		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL, todayDerived, startupBackfills)
+		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL, todayDerived, startupBackfills, apnsSender)
 	})
 	uiHandler.Register(mux)
 	mcpserver.RegisterAccess(mux, mgr, mcpAccessConfig, mcpAccessVerifier)
@@ -426,14 +437,23 @@ func shouldSeedBootstrapAdmin(registryEmpty, cloudflareAccess, hasAPIKey, hasPas
 }
 
 // runSingleTenant runs the server in legacy single-user mode.
+// Keep missing credentials represented as a nil transport at the lifecycle boundary.
+func configuredAPNSTransport(sender *apnspush.Sender) apnspush.TransportSender {
+	if sender == nil {
+		return nil
+	}
+	return sender
+}
+
 func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth bool, trustedFwdAuthNets []*net.IPNet, apiKey string,
 	mgr *tenants.Manager, reg *registry.Registry, mcpOAuth *oauth.Config,
 	accessConfig *mcpserver.AccessConfig, accessVerifier mcpserver.AccessAssertionVerifier,
 	db *storage.DB, schema string,
-	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, hrZones health.HRZones) {
+	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, hrZones health.HRZones, apnsSender *apnspush.Sender) {
 
+	apnsTransport := configuredAPNSTransport(apnsSender)
 	var morningSendMu, checkinSendMu sync.Mutex
-	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults)
+	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults, apnsTransport)
 	energyV2 := storage.NewEnergyV2Orchestrator()
 	todayDerived := storage.NewTodayDerivedStateCoordinator(energyV2)
 	refreshDatesFn := makeTodayDerivedStateRefresh(ctx, db, schema, notifyDefaults, todayDerived, func() storage.AIConfig {
@@ -462,8 +482,8 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 
 	go runReportScheduler(ctx, db, mgr, reg, schema, notifyDefaults, baseURL, func() {
 		backfillDatesFn([]string{db.Today()})
-	})
-	go runMorningLifecycle(ctx, db, mgr, reg, schema, notifyDefaults)
+	}, apnsTransport)
+	go runMorningLifecycle(ctx, db, mgr, reg, schema, notifyDefaults, apnsTransport)
 	go runAIInsightLifecycle(ctx, db, mgr, schema, notifyDefaults)
 	go runDaytimeLifecycle(ctx, db, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
@@ -478,6 +498,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	legacyUI := ui.New(mgr, reg, trustFwdAuth)
 	legacyUI.SetTrustedForwardAuthNetworkList(trustedFwdAuthNets)
 	legacyUI.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
+	legacyUI.ConfigureAPNs(apnsSender)
 	legacyUI.Register(mux)
 	mcpserver.RegisterAccess(mux, mgr, accessConfig, accessVerifier)
 	if err := mcpserver.Register(mux, mgr, mcpOAuth); err != nil {
@@ -586,7 +607,7 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler, drain fun
 // link back to the tenant's /settings page.
 func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Registry, db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, baseURL string, todayDerived *storage.TodayDerivedStateCoordinator,
-	startupBackfills *startupBackfillQueue) {
+	startupBackfills *startupBackfillQueue, apnsSender *apnspush.Sender) {
 	refreshDatesFn := makeTodayDerivedStateRefresh(ctx, db, schema, notifyDefaults, todayDerived, func() storage.AIConfig {
 		// Resolve installation defaults when the queued refresh actually runs.
 		return db.GetAIConfig(mgr.AIDefaultsFor(ctx, schema))
@@ -595,8 +616,9 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 
 	enqueueStartupCacheRefresh(startupBackfills, db, schema, notifyDefaults, refreshDatesFn, todayDerived)
 
+	apnsTransport := configuredAPNSTransport(apnsSender)
 	var morningSendMu, checkinSendMu sync.Mutex
-	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults)
+	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults, apnsTransport)
 
 	backfillFn := makeBackfillFn(db, backfillDatesFn)
 	testNotifyFn := makeTestNotifyFn(db, mgr, schema, notifyDefaults)
@@ -615,8 +637,8 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 
 	go runReportScheduler(ctx, db, mgr, reg, schema, notifyDefaults, baseURL, func() {
 		backfillDatesFn([]string{db.Today()})
-	})
-	go runMorningLifecycle(ctx, db, mgr, reg, schema, notifyDefaults)
+	}, apnsTransport)
+	go runMorningLifecycle(ctx, db, mgr, reg, schema, notifyDefaults, apnsTransport)
 	go runAIInsightLifecycle(ctx, db, mgr, schema, notifyDefaults)
 	go runDaytimeLifecycle(ctx, db, notifyDefaults, baseURL)
 	go runDailyQualityScan(db, schema, notifyDefaults, backfillDatesFn)
@@ -1088,7 +1110,7 @@ func (r *liveCheckinRouter) AnswerCallbackQuery(qid, text string) error {
 // makeMorningTrigger also serves the scheduled retry path. AI generation is
 // asynchronous, but report delivery waits for a matching cache on later ticks.
 // Check-ins remain independent from the report AI budget.
-func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig) func() {
+func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig, apnsSender apnspush.TransportSender) func() {
 	return func() {
 		if ctx.Err() != nil {
 			return
@@ -1233,6 +1255,11 @@ func makeMorningTrigger(ctx context.Context, db *storage.DB, sendMu *sync.Mutex,
 		// A failed report must not prevent the independent question. Conversely,
 		// check-in errors cannot affect a report that has already been attempted.
 		runTenantCheckinCycle(db, mgr, reg, schema, bot, ncfg, time.Now().In(loc), eligible)
+		if apnsSender != nil {
+			if err := apnspush.ProcessTenantDeliveries(ctx, db, apnsSender, defaults, time.Now(), 20); err != nil {
+				log.Printf("apns: deliver after morning trigger: %v", err)
+			}
+		}
 	}
 }
 
@@ -1252,7 +1279,7 @@ func morningCheckinEnabled(reg *registry.Registry) bool {
 		os.Getenv("TELEGRAM_WEBHOOK_TOKEN_HEADER") != ""
 }
 
-func runReportScheduler(ctx context.Context, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig, baseURL string, onDayRollover func()) {
+func runReportScheduler(ctx context.Context, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, defaults storage.NotifyConfig, baseURL string, onDayRollover func(), apnsSender apnspush.TransportSender) {
 	lastTenantDay := ""
 schedulerLoop:
 	for {
@@ -1332,7 +1359,7 @@ schedulerLoop:
 			bot = notify.NewBot(cfg.Token, cfg.ChatID)
 		}
 		if isMorning {
-			runMorningSmartRetry(ctx, bot, db, mgr, reg, schema, ncfg, baseURL)
+			runMorningSmartRetry(ctx, bot, db, mgr, reg, schema, ncfg, baseURL, apnsSender)
 		} else if cfg.Enabled() {
 			log.Println("report scheduler: sending evening report…")
 			if err := retryEveningSnapshotUnavailable(ctx, next, reportTimezone(ncfg), time.Now, waitForContext, func() error {
@@ -1413,10 +1440,10 @@ func reportScheduleSignature(cfg notify.Config) reportSchedule {
 
 // runMorningSmartRetry attempts the scheduled factual report once. The minute
 // lifecycle owns subsequent retries without holding up evening scheduling.
-func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, ncfg notify.Config, baseURL string) {
+func runMorningSmartRetry(ctx context.Context, bot *notify.Bot, db *storage.DB, mgr *tenants.Manager, reg *registry.Registry, schema string, ncfg notify.Config, baseURL string, apnsSender apnspush.TransportSender) {
 	// The independent minute loop owns retries and reminders even after this
 	// scheduled invocation returns or the daily report has already been sent.
-	makeMorningTrigger(ctx, db, mgr.MorningSendMuFor(schema), mgr, reg, schema, mgr.NotifyDefaultsFor(schema))()
+	makeMorningTrigger(ctx, db, mgr.MorningSendMuFor(schema), mgr, reg, schema, mgr.NotifyDefaultsFor(schema), apnsSender)()
 	if bot != nil && ncfg.Enabled() {
 		notify.MaybeFireAll(bot, db, ncfg, baseURL)
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"health-receiver/internal/apnspush"
 	"health-receiver/internal/notify"
 	"health-receiver/internal/storage"
 	"health-receiver/internal/tenants"
@@ -155,7 +156,7 @@ func TestMorningTriggerRecoversStaleZeroAttemptReservationThroughMinuteTick(t *t
 	mgr := &tenants.Manager{}
 	var sendMu sync.Mutex
 	defaults := storage.NotifyConfig{MorningCapHour: 6}
-	trigger := makeMorningTrigger(ctx, db, &sendMu, mgr, nil, schema, defaults)
+	trigger := makeMorningTrigger(ctx, db, &sendMu, mgr, nil, schema, defaults, nil)
 	trigger()
 
 	if sends.Load() != 1 {
@@ -178,5 +179,103 @@ func TestMorningTriggerRecoversStaleZeroAttemptReservationThroughMinuteTick(t *t
 	trigger()
 	if sends.Load() != 1 {
 		t.Fatalf("second tick sent duplicate message: sends=%d", sends.Load())
+	}
+}
+
+type noopAPNsTransport struct {
+	calls atomic.Int32
+}
+
+func (n *noopAPNsTransport) Send(_ context.Context, _, _, _, _, _ string, _ int, _ time.Time, _ []byte) (apnspush.Result, error) {
+	n.calls.Add(1)
+	return apnspush.Result{Status: 200}, nil
+}
+
+// Regression test: enabling in_app_inbox_enabled and apns_push_enabled later in
+// the day after today's morning report was already settled (e.g. sent via
+// Telegram earlier) must NOT generate a late morning report revision or enqueue
+// a retroactive APNs push.
+func TestEnablingInboxAndAPNsAfterSettledMorningReportDoesNotResendOrEnqueuePush(t *testing.T) {
+	t.Setenv("IN_APP_INBOX_ENABLED", "")
+	t.Setenv("APNS_PUSH_ENABLED", "")
+	t.Setenv("TELEGRAM_WEBHOOK_SECRET", "")
+	t.Setenv("TELEGRAM_WEBHOOK_TOKEN_HEADER", "")
+	db, pool, schema, cleanup := setupServerInboxTestDB(t, "srv_late_enable_no_retro_push")
+	defer cleanup()
+
+	ctx := context.Background()
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// Simulate an already-sent morning report from earlier today (pre-Inbox).
+	if err := db.MarkMorningReportSent(today); err != nil {
+		t.Fatalf("MarkMorningReportSent: %v", err)
+	}
+
+	// The independent check-in lane may legitimately create a new event during
+	// daytime. Seed an answered check-in so this test only measures report replay.
+	now := time.Now()
+	promptID, _, _, err := db.EnsureCanonicalCheckinPrompt(ctx, today, now, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AnswerCheckinByPromptID(ctx, promptID, today, storage.CheckinChannelWeb, storage.CheckinAnswerGreat, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Later in the day, register an active push device and enable both Inbox + APNs.
+	if _, err := db.UpsertPushDevice(ctx, storage.UpsertPushDeviceInput{
+		DeviceID:  [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		APNsToken: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		APNsEnv:   storage.PushEnvProduction,
+		BundleID:  apnspush.DefaultTopic,
+		Locale:    "en",
+	}); err != nil {
+		t.Fatalf("UpsertPushDevice: %v", err)
+	}
+	if err := db.SaveSettings(map[string]string{
+		"timezone":                       "UTC",
+		"report_lang":                    "en",
+		storage.SettingInAppInboxEnabled: "true",
+		storage.SettingAPNSPushEnabled:   "true",
+		"report_morning_weekday":         "5",
+		"report_morning_weekend":         "5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !morningReportDoneForLifecycle(db, today, true, false) {
+		t.Fatal("already-settled morning report must stay done after enabling Inbox/APNs")
+	}
+	if !morningReportDoneForLifecycle(db, today, true, true) {
+		t.Fatal("already-settled morning report must stay done with Telegram enabled too")
+	}
+
+	apnsMock := &noopAPNsTransport{}
+	mgr := &tenants.Manager{}
+	var sendMu sync.Mutex
+	defaults := storage.NotifyConfig{Timezone: "UTC", MorningCapHour: 6}
+	trigger := makeMorningTrigger(ctx, db, &sendMu, mgr, nil, schema, defaults, apnsMock)
+	trigger()
+
+	var inboxReports, pushRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM inbox_items WHERE kind = 'morning_report'`).Scan(&inboxReports); err != nil || inboxReports != 0 {
+		t.Fatalf("retroactive morning_report inbox_items = %d (err=%v), want 0", inboxReports, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM push_deliveries WHERE kind = 'morning_report'`).Scan(&pushRows); err != nil || pushRows != 0 {
+		t.Fatalf("retroactive morning_report push_deliveries = %d (err=%v), want 0", pushRows, err)
+	}
+	if apnsMock.calls.Load() != 0 {
+		t.Fatalf("retroactive APNs sends = %d, want 0", apnsMock.calls.Load())
+	}
+}
+
+func TestConfiguredAPNSTransportPreservesMissingSender(t *testing.T) {
+	var sender *apnspush.Sender
+	if configuredAPNSTransport(sender) != nil {
+		t.Fatal("missing credentials must produce a nil transport interface")
+	}
+	sender = &apnspush.Sender{}
+	if configuredAPNSTransport(sender) != sender {
+		t.Fatal("configured transport must preserve the sender")
 	}
 }
