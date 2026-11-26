@@ -296,13 +296,52 @@ func (c NotifyConfig) Enabled() bool {
 	return !c.TelegramDisabled && c.HasTelegramCredentials()
 }
 
+// CheckTelegramNotificationsEnabled reads telegram_notifications_enabled
+// directly from PostgreSQL without swallowing database errors. Missing rows
+// default to true; any read error returns (false, err) so outbound send gates
+// fail closed and defer delivery rather than leaking messages when the DB is
+// unhealthy.
+func CheckTelegramNotificationsEnabled(ctx context.Context, s *DB) (bool, error) {
+	if s == nil {
+		return true, nil
+	}
+	var raw string
+	err := s.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, SettingTelegramNotificationsEnabled).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return parseSettingBool(raw, true), nil
+}
+
+func telegramNotificationsEnabledTx(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var raw string
+	err := tx.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, SettingTelegramNotificationsEnabled).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return parseSettingBool(raw, true), nil
+}
+
 // IsTelegramNotificationsEnabled reads the live per-profile Telegram outbound
-// barrier directly from settings (defaults to true when unset).
+// barrier directly from settings (defaults to true when unset, fails closed on
+// database errors).
 func IsTelegramNotificationsEnabled(s *DB) bool {
 	if s == nil {
 		return true
 	}
-	return getSettingBool(s, SettingTelegramNotificationsEnabled, true)
+	ctx, cancel := queryCtx()
+	defer cancel()
+	enabled, err := CheckTelegramNotificationsEnabled(ctx, s)
+	if err != nil {
+		return false
+	}
+	return enabled
 }
 
 // PushCategoryPreferences holds per-category APNs push opt-in flags for a profile.
@@ -543,13 +582,16 @@ func getSettingInt(s *DB, key string, fallback int) int {
 // value, NOT to zero-bool — important because callers like
 // StressDrainEnabled default to false but other future bool flags
 // might default to true.
-func getSettingBool(s *DB, key string, fallback bool) bool {
-	v := s.GetSetting(key, "")
-	if v == "" {
+func parseSettingBool(raw string, fallback bool) bool {
+	if raw == "" {
 		return fallback
 	}
-	if b, err := strconv.ParseBool(v); err == nil {
+	if b, err := strconv.ParseBool(raw); err == nil {
 		return b
 	}
 	return fallback
+}
+
+func getSettingBool(s *DB, key string, fallback bool) bool {
+	return parseSettingBool(s.GetSetting(key, ""), fallback)
 }

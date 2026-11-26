@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -79,7 +80,7 @@ func TestStage3MidFlightTelegramDisableAfterReserveReportAttemptSkipsHTTPAndFina
 		PlainBody:   "Evening summary body",
 		RichBody:    "<b>Evening summary</b>",
 	}
-	if _, _, err := db.PublishEveningReportToInbox(ctx, &h); err != nil {
+	if _, _, err := db.PublishEveningReportToInbox(ctx, &h, true); err != nil {
 		t.Fatalf("PublishEveningReportToInbox: %v", err)
 	}
 
@@ -230,7 +231,7 @@ func TestStage3InboxTelegramRetriesSucceedAfterFailureAndNeverRetryAmbiguous(t *
 	// --- Scenario B: Evening report retries via RetryPendingInboxTelegramReports ---
 	evKey := "report:evening:" + today
 	ev := storage.ReportHistory{DeliveryKey: &evKey, Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Evening body"}
-	if _, _, err := db.PublishEveningReportToInbox(ctx, &ev); err != nil {
+	if _, _, err := db.PublishEveningReportToInbox(ctx, &ev, true); err != nil {
 		t.Fatalf("publish evening: %v", err)
 	}
 	mode.Store(0)
@@ -253,7 +254,7 @@ func TestStage3InboxTelegramRetriesSucceedAfterFailureAndNeverRetryAmbiguous(t *
 	// guidance_change and sleep_update on the same day.
 	daytimeDB := setupStage3NotifyDB(t)
 	gc := storage.ReportHistory{Kind: "proactive", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Guidance changed", Context: json.RawMessage(`{}`)}
-	if id, _, err := daytimeDB.PublishProactiveToInbox(ctx, &gc, "guidance_change:ep-retry:1", "proactive:daytime:ep-retry:1", nil, now, time.UTC, storage.InboxKindGuidanceChange, 8*time.Hour); err != nil || id == uuid.Nil {
+	if id, _, err := daytimeDB.PublishProactiveToInbox(ctx, &gc, "guidance_change:ep-retry:1", "proactive:daytime:ep-retry:1", nil, now, time.UTC, storage.InboxKindGuidanceChange, 8*time.Hour, true); err != nil || id == uuid.Nil {
 		t.Fatalf("publish guidance_change: id=%s err=%v", id, err)
 	}
 	mode.Store(0)
@@ -263,7 +264,7 @@ func TestStage3InboxTelegramRetriesSucceedAfterFailureAndNeverRetryAmbiguous(t *
 
 	// Publish a sleep_update whose Telegram attempt ends as `ambiguous`.
 	su := storage.ReportHistory{Kind: "proactive", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Sleep updated", Context: json.RawMessage(`{}`)}
-	if id, _, err := daytimeDB.PublishProactiveToInbox(ctx, &su, "sleep_update:ep-ambig:1", "proactive:daytime:ep-ambig:1", nil, now.Add(2*time.Hour), time.UTC, storage.InboxKindSleepUpdate, 8*time.Hour); err != nil || id == uuid.Nil {
+	if id, _, err := daytimeDB.PublishProactiveToInbox(ctx, &su, "sleep_update:ep-ambig:1", "proactive:daytime:ep-ambig:1", nil, now.Add(2*time.Hour), time.UTC, storage.InboxKindSleepUpdate, 8*time.Hour, true); err != nil || id == uuid.Nil {
 		t.Fatalf("publish sleep_update: id=%s err=%v", id, err)
 	}
 	mode.Store(2) // ambiguous response
@@ -311,11 +312,11 @@ func TestStage3CrashAfterInboxPublishBeforeFirstTelegramReservationRecoversWitho
 	// BEFORE DeliverArchivedReportToTelegram ever creates a notification_deliveries row.
 	evKey := "report:evening:" + today
 	ev := storage.ReportHistory{DeliveryKey: &evKey, Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Evening after crash"}
-	if id, created, err := db.PublishEveningReportToInbox(ctx, &ev); err != nil || !created || id == uuid.Nil {
+	if id, created, err := db.PublishEveningReportToInbox(ctx, &ev, true); err != nil || !created || id == uuid.Nil {
 		t.Fatalf("publish evening: id=%s created=%v err=%v", id, created, err)
 	}
 	wd := storage.ReportHistory{Kind: "proactive", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Digest after crash"}
-	if id, created, err := db.PublishProactiveToInbox(ctx, &wd, "weekly_digest:"+today, "proactive:weekly_digest:"+today, nil, now, time.UTC, storage.InboxKindWeeklyDigest, 24*time.Hour); err != nil || !created || id == uuid.Nil {
+	if id, created, err := db.PublishProactiveToInbox(ctx, &wd, "weekly_digest:"+today, "proactive:weekly_digest:"+today, nil, now, time.UTC, storage.InboxKindWeeklyDigest, 24*time.Hour, true); err != nil || !created || id == uuid.Nil {
 		t.Fatalf("publish digest: id=%s created=%v err=%v", id, created, err)
 	}
 	_ = db.SaveSettings(map[string]string{proactiveSentKey("weekly_digest"): today})
@@ -334,7 +335,7 @@ func TestStage3CrashAfterInboxPublishBeforeFirstTelegramReservationRecoversWitho
 		t.Fatalf("expected 0 duplicate deliveries on second recovery tick, retried=%d calls=%d err=%v", retried2, httpCalls.Load(), err)
 	}
 
-	// Contrast case: card published while telegram_notifications_enabled=false must NOT
+	// Contrast case 1: card published while telegram_notifications_enabled=false must NOT
 	// be retroactively delivered if Telegram is re-enabled later on the same day.
 	optOutDB := setupStage3NotifyDB(t)
 	if err := optOutDB.SaveSettings(map[string]string{storage.SettingTelegramNotificationsEnabled: "false"}); err != nil {
@@ -342,7 +343,7 @@ func TestStage3CrashAfterInboxPublishBeforeFirstTelegramReservationRecoversWitho
 	}
 	optOutEvKey := "report:evening:" + today
 	optOutEv := storage.ReportHistory{DeliveryKey: &optOutEvKey, Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Opt-out evening"}
-	if id, created, err := optOutDB.PublishEveningReportToInbox(ctx, &optOutEv); err != nil || !created || id == uuid.Nil {
+	if id, created, err := optOutDB.PublishEveningReportToInbox(ctx, &optOutEv, true); err != nil || !created || id == uuid.Nil {
 		t.Fatalf("publish opt-out evening: id=%s created=%v err=%v", id, created, err)
 	}
 	if err := optOutDB.SaveSettings(map[string]string{storage.SettingTelegramNotificationsEnabled: "true"}); err != nil {
@@ -355,5 +356,111 @@ func TestStage3CrashAfterInboxPublishBeforeFirstTelegramReservationRecoversWitho
 	}
 	if retriedOptOut != 0 || httpCalls.Load() != callsBeforeOptOutCheck {
 		t.Fatalf("expected opted-out card NOT to be retroactively sent after re-enable, retried=%d callsDelta=%d", retriedOptOut, httpCalls.Load()-callsBeforeOptOutCheck)
+	}
+
+	// Contrast case 2 (P1): card published when Telegram bot is NOT configured
+	// (flag still default true, telegramDeliveryAllowed=false) followed immediately
+	// by a crash and later bot configuration must NOT retroactively send old cards.
+	unconfiguredDB := setupStage3NotifyDB(t)
+	unconfEvKey := "report:evening:" + today
+	unconfEv := storage.ReportHistory{DeliveryKey: &unconfEvKey, Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Unconfigured evening"}
+	if id, created, err := unconfiguredDB.PublishEveningReportToInbox(ctx, &unconfEv, false); err != nil || !created || id == uuid.Nil {
+		t.Fatalf("publish unconfigured evening: id=%s created=%v err=%v", id, created, err)
+	}
+	unconfWd := storage.ReportHistory{Kind: "proactive", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Unconfigured digest"}
+	if id, created, err := unconfiguredDB.PublishProactiveToInbox(ctx, &unconfWd, "weekly_digest:"+today, "proactive:weekly_digest:"+today, nil, now, time.UTC, storage.InboxKindWeeklyDigest, 24*time.Hour, false); err != nil || !created || id == uuid.Nil {
+		t.Fatalf("publish unconfigured digest: id=%s created=%v err=%v", id, created, err)
+	}
+	// Simulate configuring Telegram bot later on the same day and running recovery tick.
+	callsBeforeUnconfCheck := httpCalls.Load()
+	retriedUnconf, err := RetryPendingInboxTelegramReports(ctx, bot, unconfiguredDB, cfg, today, nil)
+	if err != nil {
+		t.Fatalf("RetryPendingInboxTelegramReports on later-configured profile: %v", err)
+	}
+	if retriedUnconf != 0 || httpCalls.Load() != callsBeforeUnconfCheck {
+		t.Fatalf("expected cards published without configured bot NOT to be retroactively sent, retried=%d callsDelta=%d", retriedUnconf, httpCalls.Load()-callsBeforeUnconfCheck)
+	}
+}
+
+func TestStage3TelegramFlagReadErrorFailsClosedAndDefersRetryably(t *testing.T) {
+	db := setupStage3NotifyDB(t)
+	ctx := context.Background()
+	today := time.Now().UTC().Format("2006-01-02")
+
+	var httpCalls atomic.Int32
+	oldBase := telegramAPIBase
+	defer func() { telegramAPIBase = oldBase }()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":555}}`)
+	}))
+	defer ts.Close()
+	telegramAPIBase = ts.URL
+
+	bot := NewBot("test-token", "123456")
+	cfg := Config{
+		Token:    "test-token",
+		ChatID:   "123456",
+		Lang:     "en",
+		Timezone: "UTC",
+	}
+
+	// Verify CheckTelegramNotificationsEnabled itself returns (false, err) on cancelled context / DB error,
+	// never failing open to true even when flag is absent or false.
+	canceledCtx, cancelNow := context.WithCancel(ctx)
+	cancelNow()
+	if enabled, err := storage.CheckTelegramNotificationsEnabled(canceledCtx, db); err == nil || enabled {
+		t.Fatalf("expected CheckTelegramNotificationsEnabled to fail closed on DB/context error, got enabled=%v err=%v", enabled, err)
+	}
+
+	// Publish an evening report while Telegram is enabled.
+	evKey := "report:evening:" + today
+	ev := storage.ReportHistory{DeliveryKey: &evKey, Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Evening"}
+	if id, created, err := db.PublishEveningReportToInbox(ctx, &ev, true); err != nil || !created || id == uuid.Nil {
+		t.Fatalf("publish evening: id=%s created=%v err=%v", id, created, err)
+	}
+
+	// Inject a DB read failure specifically AFTER ReserveReportAttempt commits and
+	// before HTTP send: must NOT send HTTP, must finalize attempt + delivery as
+	// failed/archive_unavailable so a later tick can retry!
+	var failReadAfterReserve atomic.Bool
+	restoreAfterReserve := setBeforeReportAttemptSendHook(func() {
+		failReadAfterReserve.Store(true)
+	})
+	defer restoreAfterReserve()
+
+	restoreCheck := setCheckTelegramEnabledHook(func(callCtx context.Context, callDB *storage.DB) (bool, error) {
+		if failReadAfterReserve.Load() {
+			return false, errors.New("simulated postgres connection reset")
+		}
+		return storage.CheckTelegramNotificationsEnabled(callCtx, callDB)
+	})
+	defer restoreCheck()
+
+	_, err := DeliverArchivedReportToTelegram(db, bot, cfg, &ev)
+	if err == nil {
+		t.Fatalf("expected DB flag read error to be surfaced and defer delivery")
+	}
+	if httpCalls.Load() != 0 {
+		t.Fatalf("expected 0 Telegram HTTP calls when flag read errored, got %d", httpCalls.Load())
+	}
+
+	detail, err := db.GetReportHistory(ctx, ev.ID)
+	if err != nil {
+		t.Fatalf("GetReportHistory: %v", err)
+	}
+	if len(detail.Attempts) != 1 || detail.Attempts[0].Status != "failed" || detail.Attempts[0].ErrorCode != "archive_unavailable" {
+		t.Fatalf("expected attempt finalized as failed/archive_unavailable, got %+v", detail.Attempts)
+	}
+
+	// Once PostgreSQL recovers, RetryPendingInboxTelegramReports MUST be able to retry and deliver!
+	failReadAfterReserve.Store(false)
+	restoreAfterReserve()
+	restoreCheck()
+
+	retried, err := RetryPendingInboxTelegramReports(ctx, bot, db, cfg, today, []string{storage.InboxKindEveningReport})
+	if err != nil || retried != 1 || httpCalls.Load() != 1 {
+		t.Fatalf("expected deferred report to succeed after DB recovery, retried=%d calls=%d err=%v", retried, httpCalls.Load(), err)
 	}
 }

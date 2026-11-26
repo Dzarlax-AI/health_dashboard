@@ -184,14 +184,13 @@ func maybeFireDaytime(ctx context.Context, bot *Bot, db *storage.DB, cfg Config,
 	snapshot, _ := json.Marshal(map[string]any{"date": now.In(cfg.location()).Format("2006-01-02"), "sleep_date": current.sleep.WakeDate, "sleep_finalized_at": current.sleep.FinalizedAt, "decision": current.decision})
 	h := storage.ReportHistory{Kind: "proactive", LocalDate: now.In(cfg.location()).Format("2006-01-02"), Timezone: cfg.location().String(), Language: cfg.Lang, PlainBody: msg, DecisionID: current.decision.ID, Context: snapshot, FallbackReason: "deterministic_daytime"}
 	if storage.IsInAppInboxEnabled(db) {
-		inboxID, _, err := db.PublishProactiveToInbox(ctx, &h, "", "proactive:daytime:pending", &current.event, now, cfg.location(), storage.InboxKindGuidanceChange, 8*time.Hour)
+		telegramAllowed := bot != nil && cfg.Enabled()
+		inboxID, _, err := db.PublishProactiveToInbox(ctx, &h, "", "proactive:daytime:pending", &current.event, now, cfg.location(), storage.InboxKindGuidanceChange, 8*time.Hour, telegramAllowed)
 		if err != nil || inboxID == (storage.ReportHistory{}.ID) {
 			return
 		}
-		if bot != nil && cfg.Enabled() && storage.IsTelegramNotificationsEnabled(db) {
+		if telegramAllowed {
 			_, _ = DeliverArchivedReportToTelegram(db, bot, cfg, &h)
-		} else if h.DeliveryKey != nil {
-			_ = db.MarkReportTelegramDisabled(ctx, *h.DeliveryKey)
 		}
 		return
 	}

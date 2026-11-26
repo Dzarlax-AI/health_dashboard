@@ -74,13 +74,13 @@ func TestStage3EveningReportPublicationDecoupledFromTelegram(t *testing.T) {
 		Language:    "en",
 		PlainBody:   "<b>Evening</b>\nSteps: 9200",
 	}
-	inboxID, created, err := db.PublishEveningReportToInbox(ctx, &h)
+	inboxID, created, err := db.PublishEveningReportToInbox(ctx, &h, true)
 	if err != nil || !created || inboxID == uuid.Nil {
 		t.Fatalf("PublishEveningReportToInbox: id=%s created=%v err=%v", inboxID, created, err)
 	}
 
 	// Second call is idempotent (created=false) and does not duplicate card or push.
-	inboxID2, created2, err := db.PublishEveningReportToInbox(ctx, &h)
+	inboxID2, created2, err := db.PublishEveningReportToInbox(ctx, &h, true)
 	if err != nil || created2 || inboxID2 != inboxID {
 		t.Fatalf("repeat PublishEveningReportToInbox: id=%s created=%v err=%v", inboxID2, created2, err)
 	}
@@ -126,7 +126,7 @@ func TestStage3EveningReportPublicationDecoupledFromTelegram(t *testing.T) {
 		Language:    "en",
 		PlainBody:   "Evening 27",
 	}
-	sid, screated, err := db.PublishEveningReportToInbox(ctx, &hSettled)
+	sid, screated, err := db.PublishEveningReportToInbox(ctx, &hSettled, true)
 	if err != nil || screated || sid != uuid.Nil {
 		t.Fatalf("expected anti-retroactivity skip for settled evening, got id=%s created=%v err=%v", sid, screated, err)
 	}
@@ -161,7 +161,7 @@ func TestStage3ProactivePublicationBudgetAndLastDeliveredGuidance(t *testing.T) 
 	// Publish 1st proactive item at 10:00.
 	t1 := time.Date(2026, 11, 26, 10, 0, 0, 0, loc)
 	h1 := ReportHistory{Kind: "proactive", LocalDate: "2026-11-26", Timezone: "UTC", Language: "en", PlainBody: "Digest 1", FallbackReason: "weekly_digest"}
-	id1, created1, err := db.PublishProactiveToInbox(ctx, &h1, "weekly_digest:2026-11-26", "proactive:weekly_digest:2026-11-26", nil, t1, loc, InboxKindWeeklyDigest, 24*time.Hour)
+	id1, created1, err := db.PublishProactiveToInbox(ctx, &h1, "weekly_digest:2026-11-26", "proactive:weekly_digest:2026-11-26", nil, t1, loc, InboxKindWeeklyDigest, 24*time.Hour, true)
 	if err != nil || !created1 || id1 == uuid.Nil {
 		t.Fatalf("1st proactive publish failed: id=%s created=%v err=%v", id1, created1, err)
 	}
@@ -178,7 +178,7 @@ func TestStage3ProactivePublicationBudgetAndLastDeliveredGuidance(t *testing.T) 
 	// Within 1h cooldown (10:30), 2nd proactive item must be suppressed.
 	tCooldown := t1.Add(30 * time.Minute)
 	hCool := ReportHistory{Kind: "proactive", LocalDate: "2026-11-26", Timezone: "UTC", Language: "en", PlainBody: "Nudge cool", FallbackReason: "energy_backfill"}
-	idCool, createdCool, err := db.PublishProactiveToInbox(ctx, &hCool, "nudge:energy_backfill:2026-11-26", "proactive:energy_backfill:2026-11-26", nil, tCooldown, loc, InboxKindNudge, 24*time.Hour)
+	idCool, createdCool, err := db.PublishProactiveToInbox(ctx, &hCool, "nudge:energy_backfill:2026-11-26", "proactive:energy_backfill:2026-11-26", nil, tCooldown, loc, InboxKindNudge, 24*time.Hour, true)
 	if err != nil || createdCool || idCool != uuid.Nil {
 		t.Fatalf("expected cooldown block at +30m, got id=%s created=%v err=%v", idCool, createdCool, err)
 	}
@@ -186,7 +186,7 @@ func TestStage3ProactivePublicationBudgetAndLastDeliveredGuidance(t *testing.T) 
 	// After 1h cooldown (11:15), 2nd proactive item succeeds.
 	t2 := t1.Add(75 * time.Minute)
 	h2 := ReportHistory{Kind: "proactive", LocalDate: "2026-11-26", Timezone: "UTC", Language: "en", PlainBody: "Nudge 2", FallbackReason: "energy_backfill"}
-	id2, created2, err := db.PublishProactiveToInbox(ctx, &h2, "nudge:energy_backfill:2026-11-26", "proactive:energy_backfill:2026-11-26", nil, t2, loc, InboxKindNudge, 24*time.Hour)
+	id2, created2, err := db.PublishProactiveToInbox(ctx, &h2, "nudge:energy_backfill:2026-11-26", "proactive:energy_backfill:2026-11-26", nil, t2, loc, InboxKindNudge, 24*time.Hour, true)
 	if err != nil || !created2 || id2 == uuid.Nil {
 		t.Fatalf("2nd proactive publish failed: id=%s created=%v err=%v", id2, created2, err)
 	}
@@ -195,7 +195,7 @@ func TestStage3ProactivePublicationBudgetAndLastDeliveredGuidance(t *testing.T) 
 	// 3rd proactive item on the same day (13:00) must be blocked by daily limit <=2.
 	t3 := t2.Add(2 * time.Hour)
 	h3 := ReportHistory{Kind: "proactive", LocalDate: "2026-11-26", Timezone: "UTC", Language: "en", PlainBody: "Nudge 3", FallbackReason: "stress_validation_validated"}
-	id3, created3, err := db.PublishProactiveToInbox(ctx, &h3, "nudge:stress_validation_validated:2026-11-26", "proactive:stress_validation_validated:2026-11-26", nil, t3, loc, InboxKindNudge, 24*time.Hour)
+	id3, created3, err := db.PublishProactiveToInbox(ctx, &h3, "nudge:stress_validation_validated:2026-11-26", "proactive:stress_validation_validated:2026-11-26", nil, t3, loc, InboxKindNudge, 24*time.Hour, true)
 	if err != nil || created3 || id3 != uuid.Nil {
 		t.Fatalf("expected daily limit block for 3rd proactive item, got id=%s created=%v err=%v", id3, created3, err)
 	}
@@ -507,7 +507,7 @@ func TestStage3ListRetryableInboxTelegramReportsBypassesGatesAndRespectsAmbiguou
 	// 1. Evening report -> failed (provider_rejected): MUST be retryable.
 	evKey := "report:evening:" + today
 	ev := ReportHistory{DeliveryKey: &evKey, Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Evening"}
-	if id, _, err := db.PublishEveningReportToInbox(ctx, &ev); err != nil || id == uuid.Nil {
+	if id, _, err := db.PublishEveningReportToInbox(ctx, &ev, true); err != nil || id == uuid.Nil {
 		t.Fatalf("publish evening: id=%s err=%v", id, err)
 	}
 	evToken, ok, err := db.ReserveReportDeliveryForExisting(ctx, ev.ID)
@@ -523,7 +523,7 @@ func TestStage3ListRetryableInboxTelegramReportsBypassesGatesAndRespectsAmbiguou
 
 	// 2. Sleep update -> ambiguous: MUST NEVER be listed or reserved.
 	su := ReportHistory{Kind: "proactive", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Sleep update"}
-	if id, _, err := db.PublishProactiveToInbox(ctx, &su, "sleep_update:ep1:1", "proactive:daytime:ep1:1", nil, now, time.UTC, InboxKindSleepUpdate, 8*time.Hour); err != nil || id == uuid.Nil {
+	if id, _, err := db.PublishProactiveToInbox(ctx, &su, "sleep_update:ep1:1", "proactive:daytime:ep1:1", nil, now, time.UTC, InboxKindSleepUpdate, 8*time.Hour, true); err != nil || id == uuid.Nil {
 		t.Fatalf("publish sleep update: id=%s err=%v", id, err)
 	}
 	suToken, ok, err := db.ReserveReportDeliveryForExisting(ctx, su.ID)
@@ -534,7 +534,7 @@ func TestStage3ListRetryableInboxTelegramReportsBypassesGatesAndRespectsAmbiguou
 
 	// 3. Weekly digest -> failed with telegram_disabled: MUST NOT be listed or reserved.
 	wd := ReportHistory{Kind: "proactive", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Digest"}
-	if id, _, err := db.PublishProactiveToInbox(ctx, &wd, "weekly_digest:"+today, "proactive:weekly_digest:"+today, nil, now.Add(2*time.Hour), time.UTC, InboxKindWeeklyDigest, 24*time.Hour); err != nil || id == uuid.Nil {
+	if id, _, err := db.PublishProactiveToInbox(ctx, &wd, "weekly_digest:"+today, "proactive:weekly_digest:"+today, nil, now.Add(2*time.Hour), time.UTC, InboxKindWeeklyDigest, 24*time.Hour, true); err != nil || id == uuid.Nil {
 		t.Fatalf("publish digest: id=%s err=%v", id, err)
 	}
 	wdToken, ok, err := db.ReserveReportDeliveryForExisting(ctx, wd.ID)
@@ -563,7 +563,7 @@ func TestStage3ProviderRejectedCapEnforcedUnderLockInReserveReportDeliveryForExi
 
 	evKey := "report:evening:" + today
 	ev := ReportHistory{DeliveryKey: &evKey, Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Evening"}
-	if id, _, err := db.PublishEveningReportToInbox(ctx, &ev); err != nil || id == uuid.Nil {
+	if id, _, err := db.PublishEveningReportToInbox(ctx, &ev, true); err != nil || id == uuid.Nil {
 		t.Fatalf("publish evening: id=%s err=%v", id, err)
 	}
 

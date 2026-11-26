@@ -56,7 +56,12 @@ func buildCheckinPromptButtons(lang, date string) ([][]InlineButton, string) {
 // check-in question to Telegram using its durable delivery key. Failures never
 // roll back the committed subjective_checkins / inbox_items rows.
 func DeliverCheckinPromptToTelegram(bot CheckinBot, db *storage.DB, lang, date string) error {
-	if bot == nil || db == nil || date == "" || !storage.IsTelegramNotificationsEnabled(db) {
+	if bot == nil || db == nil || date == "" {
+		return nil
+	}
+	if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+		return checkErr
+	} else if !enabled {
 		return nil
 	}
 	key := "prompt:checkin:" + date
@@ -66,7 +71,9 @@ func DeliverCheckinPromptToTelegram(bot CheckinBot, db *storage.DB, lang, date s
 	if err != nil || !reserved {
 		return err
 	}
-	if !storage.IsTelegramNotificationsEnabled(db) {
+	if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+		return errors.Join(checkErr, completeNotificationDelivery(db, key, token, "failed", "archive_unavailable"))
+	} else if !enabled {
 		_ = completeNotificationDelivery(db, key, token, "failed", "telegram_disabled")
 		return nil
 	}
@@ -122,8 +129,12 @@ type CheckinStore interface {
 // Store write is skipped when the Telegram send fails so we don't
 // claim "we prompted them" when no message ever arrived.
 func SendCheckinPrompt(bot CheckinBot, store CheckinStore, lang, date string, now, expiresAt time.Time) error {
-	if db, ok := store.(*storage.DB); ok && !storage.IsTelegramNotificationsEnabled(db) {
-		return nil
+	if db, ok := store.(*storage.DB); ok {
+		if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+			return checkErr
+		} else if !enabled {
+			return nil
+		}
 	}
 	_ = expiresAt
 	expiresAt = CheckinPromptExpiry(now)
@@ -141,11 +152,18 @@ func SendCheckinPrompt(bot CheckinBot, store CheckinStore, lang, date string, no
 			return err
 		}
 	}
-	if db, ok := store.(*storage.DB); ok && !storage.IsTelegramNotificationsEnabled(db) {
-		if delivery != nil {
-			_ = completeNotificationDelivery(delivery, "prompt:checkin:"+date, token, "failed", "telegram_disabled")
+	if db, ok := store.(*storage.DB); ok {
+		if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+			if delivery != nil {
+				return errors.Join(checkErr, completeNotificationDelivery(delivery, "prompt:checkin:"+date, token, "failed", "archive_unavailable"))
+			}
+			return checkErr
+		} else if !enabled {
+			if delivery != nil {
+				_ = completeNotificationDelivery(delivery, "prompt:checkin:"+date, token, "failed", "telegram_disabled")
+			}
+			return nil
 		}
-		return nil
 	}
 	msgID, err := bot.SendInlineKeyboard(text, rows)
 	if err != nil {

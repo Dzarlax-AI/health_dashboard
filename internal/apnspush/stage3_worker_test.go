@@ -138,7 +138,7 @@ func TestWorkerRejectsV2DeliveryAfterDeviceDowngradesToContractV1(t *testing.T) 
 		Language:    "en",
 		PlainBody:   "Evening body",
 	}
-	inboxID, created, err := db.PublishEveningReportToInbox(ctx, &h)
+	inboxID, created, err := db.PublishEveningReportToInbox(ctx, &h, false)
 	if err != nil || !created {
 		t.Fatalf("publish evening: created=%v err=%v", created, err)
 	}
@@ -200,7 +200,7 @@ func TestWorkerRespectsCategoryPreferenceAndWakeFeedbackFreshness(t *testing.T) 
 	// Enqueue evening report, then disable push_pref_evening_report before worker sends.
 	key := "report:evening:2026-11-26"
 	h := storage.ReportHistory{DeliveryKey: &key, Kind: "evening", LocalDate: "2026-11-26", Timezone: "UTC", Language: "ru", PlainBody: "Evening"}
-	evID, _, err := db.PublishEveningReportToInbox(ctx, &h)
+	evID, _, err := db.PublishEveningReportToInbox(ctx, &h, false)
 	if err != nil {
 		t.Fatalf("publish evening: %v", err)
 	}

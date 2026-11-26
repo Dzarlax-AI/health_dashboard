@@ -50,7 +50,7 @@ func TestInboxContractV1CompatibilityAndV2Endpoints(t *testing.T) {
 	}
 	eKey := "report:evening:" + today
 	eh := storage.ReportHistory{DeliveryKey: &eKey, Kind: "evening", LocalDate: today, Timezone: "UTC", Language: "en", PlainBody: "Evening text"}
-	eID, _, err := db.PublishEveningReportToInbox(ctx, &eh)
+	eID, _, err := db.PublishEveningReportToInbox(ctx, &eh, false)
 	if err != nil {
 		t.Fatalf("publish evening: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestNotificationPreferencesAndTelegramOptOutBarrier(t *testing.T) {
 
 	key := "report:evening:2026-11-26"
 	eh := storage.ReportHistory{DeliveryKey: &key, Kind: "evening", LocalDate: "2026-11-26", Timezone: "UTC", Language: "en", PlainBody: "Evening"}
-	if _, _, err := db.PublishEveningReportToInbox(ctx, &eh); err != nil {
+	if _, _, err := db.PublishEveningReportToInbox(ctx, &eh, true); err != nil {
 		t.Fatalf("publish evening: %v", err)
 	}
 	bot := notify.NewBot("123456:fake-bot-token", "987654321")

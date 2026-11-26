@@ -109,7 +109,12 @@ func ContextPromptOptions(lang string, allowedCategories []string) (string, []Ch
 // prompt to Telegram under its durable delivery key, guarded by the live
 // telegram_notifications_enabled barrier.
 func DeliverContextPromptToTelegram(bot ContextPromptBot, db *storage.DB, lang string, prompt *storage.ContextPromptInteraction) error {
-	if bot == nil || db == nil || prompt == nil || !storage.IsTelegramNotificationsEnabled(db) {
+	if bot == nil || db == nil || prompt == nil {
+		return nil
+	}
+	if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+		return checkErr
+	} else if !enabled {
 		return nil
 	}
 	rows, text := buildContextPromptButtons(lang, *prompt)
@@ -123,7 +128,9 @@ func DeliverContextPromptToTelegram(bot ContextPromptBot, db *storage.DB, lang s
 	if err != nil || !reserved {
 		return err
 	}
-	if !storage.IsTelegramNotificationsEnabled(db) {
+	if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+		return errors.Join(checkErr, completeNotificationDelivery(db, key, token, "failed", "archive_unavailable"))
+	} else if !enabled {
 		_ = completeNotificationDelivery(db, key, token, "failed", "telegram_disabled")
 		return nil
 	}
@@ -145,8 +152,12 @@ func SendContextPrompt(bot ContextPromptBot, store ContextPromptStore, lang stri
 	if prompt == nil {
 		return nil
 	}
-	if db, ok := store.(*storage.DB); ok && !storage.IsTelegramNotificationsEnabled(db) {
-		return nil
+	if db, ok := store.(*storage.DB); ok {
+		if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+			return checkErr
+		} else if !enabled {
+			return nil
+		}
 	}
 	rows, text := buildContextPromptButtons(lang, *prompt)
 	if len(rows) == 0 {
@@ -166,11 +177,18 @@ func SendContextPrompt(bot ContextPromptBot, store ContextPromptStore, lang stri
 			return err
 		}
 	}
-	if db, ok := store.(*storage.DB); ok && !storage.IsTelegramNotificationsEnabled(db) {
-		if delivery != nil {
-			_ = completeNotificationDelivery(delivery, key, token, "failed", "telegram_disabled")
+	if db, ok := store.(*storage.DB); ok {
+		if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+			if delivery != nil {
+				return errors.Join(checkErr, completeNotificationDelivery(delivery, key, token, "failed", "archive_unavailable"))
+			}
+			return checkErr
+		} else if !enabled {
+			if delivery != nil {
+				_ = completeNotificationDelivery(delivery, key, token, "failed", "telegram_disabled")
+			}
+			return nil
 		}
-		return nil
 	}
 	msgID, err := bot.SendInlineKeyboard(text, rows)
 	if err != nil {

@@ -58,7 +58,12 @@ func buildWakeFeedbackPrompt(lang, date string, wake time.Time) ([][]InlineButto
 // feedback prompt to Telegram using its durable delivery key, guarded by the
 // live telegram_notifications_enabled barrier.
 func DeliverWakeFeedbackToTelegram(bot CheckinBot, db *storage.DB, lang, date string, wake time.Time) error {
-	if bot == nil || db == nil || date == "" || !storage.IsTelegramNotificationsEnabled(db) {
+	if bot == nil || db == nil || date == "" {
+		return nil
+	}
+	if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+		return checkErr
+	} else if !enabled {
 		return nil
 	}
 	key := "prompt:wake_feedback:" + date
@@ -68,7 +73,9 @@ func DeliverWakeFeedbackToTelegram(bot CheckinBot, db *storage.DB, lang, date st
 	if err != nil || !reserved {
 		return err
 	}
-	if !storage.IsTelegramNotificationsEnabled(db) {
+	if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+		return errors.Join(checkErr, completeNotificationDelivery(db, key, token, "failed", "archive_unavailable"))
+	} else if !enabled {
 		_ = completeNotificationDelivery(db, key, token, "failed", "telegram_disabled")
 		return nil
 	}
@@ -105,8 +112,12 @@ func parseWakeFeedbackCallback(payload string) (response, date string, ok bool) 
 // morning report. It returns sent=false for disabled, missing, duplicate, or
 // high-confidence-cadence skips.
 func SendWakeFeedbackPrompt(bot CheckinBot, store WakeFeedbackStore, lang, date string, now time.Time) (bool, error) {
-	if db, ok := store.(*storage.DB); ok && !storage.IsTelegramNotificationsEnabled(db) {
-		return false, nil
+	if db, ok := store.(*storage.DB); ok {
+		if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+			return false, checkErr
+		} else if !enabled {
+			return false, nil
+		}
 	}
 	metric, err := store.GetDerivedMetric(storage.DerivedMetricWakeTime, date)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -142,11 +153,18 @@ func SendWakeFeedbackPrompt(bot CheckinBot, store WakeFeedbackStore, lang, date 
 			return false, reserveErr
 		}
 	}
-	if db, ok := store.(*storage.DB); ok && !storage.IsTelegramNotificationsEnabled(db) {
-		if delivery != nil {
-			_ = completeNotificationDelivery(delivery, "prompt:wake_feedback:"+date, token, "failed", "telegram_disabled")
+	if db, ok := store.(*storage.DB); ok {
+		if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+			if delivery != nil {
+				return false, errors.Join(checkErr, completeNotificationDelivery(delivery, "prompt:wake_feedback:"+date, token, "failed", "archive_unavailable"))
+			}
+			return false, checkErr
+		} else if !enabled {
+			if delivery != nil {
+				_ = completeNotificationDelivery(delivery, "prompt:wake_feedback:"+date, token, "failed", "telegram_disabled")
+			}
+			return false, nil
 		}
-		return false, nil
 	}
 	messageID, err := bot.SendInlineKeyboard(text, rows)
 	if err != nil {

@@ -33,6 +33,28 @@ func setBeforeReportAttemptSendHook(fn func()) func() {
 	}
 }
 
+var checkTelegramEnabledHook atomic.Pointer[func(context.Context, *storage.DB) (bool, error)]
+
+func setCheckTelegramEnabledHook(fn func(context.Context, *storage.DB) (bool, error)) func() {
+	var ptr *func(context.Context, *storage.DB) (bool, error)
+	if fn != nil {
+		ptr = &fn
+	}
+	prev := checkTelegramEnabledHook.Swap(ptr)
+	return func() {
+		checkTelegramEnabledHook.Store(prev)
+	}
+}
+
+func checkTelegramNotificationsEnabled(db *storage.DB) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
+	defer cancel()
+	if hookPtr := checkTelegramEnabledHook.Load(); hookPtr != nil && *hookPtr != nil {
+		return (*hookPtr)(ctx, db)
+	}
+	return storage.CheckTelegramNotificationsEnabled(ctx, db)
+}
+
 type notificationDeliveryStore interface {
 	ReserveNotificationDelivery(context.Context, string) (uuid.UUID, bool, error)
 	CompleteNotificationDelivery(context.Context, string, uuid.UUID, string, string) error
@@ -227,10 +249,17 @@ func SendMorning(bot *Bot, db *storage.DB, cfg Config) error {
 // explicit admin previews, which may be sent repeatedly. AI blocks are read
 // from the existing cache by sendMorningReport; no provider call is made.
 func SendMorningPreview(bot *Bot, db *storage.DB, cfg Config) error {
-	if cfg.TelegramDisabled || !storage.IsTelegramNotificationsEnabled(db) {
+	if cfg.TelegramDisabled {
 		return ErrTelegramNotificationsDisabled
 	}
-	_, _, err := sendMorningReport(bot, db, cfg, MorningSendOpts{Force: true}, reportDeliveryPreview)
+	enabled, err := checkTelegramNotificationsEnabled(db)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return ErrTelegramNotificationsDisabled
+	}
+	_, _, err = sendMorningReport(bot, db, cfg, MorningSendOpts{Force: true}, reportDeliveryPreview)
 	return err
 }
 
@@ -427,15 +456,23 @@ func SendEvening(bot *Bot, db *storage.DB, cfg Config) error {
 // SendEveningPreview renders current deterministic data and sends it without
 // reserving the production evening-report key.
 func SendEveningPreview(bot *Bot, db *storage.DB, cfg Config) error {
-	if cfg.TelegramDisabled || !storage.IsTelegramNotificationsEnabled(db) {
+	if cfg.TelegramDisabled {
+		return ErrTelegramNotificationsDisabled
+	}
+	enabled, err := checkTelegramNotificationsEnabled(db)
+	if err != nil {
+		return err
+	}
+	if !enabled {
 		return ErrTelegramNotificationsDisabled
 	}
 	return sendEveningReport(bot, db, cfg, reportDeliveryPreview)
 }
 
 // PublishEveningToInboxAndTelegram atomically archives the evening report in
-// report_history + inbox_items (+ APNs push queue on first creation), then
-// optionally delivers the same archived report to Telegram if enabled.
+// report_history + inbox_items (+ APNs push queue on first creation) along with
+// the atomic Telegram delivery eligibility decision, then optionally delivers
+// the same archived report to Telegram if enabled.
 func PublishEveningToInboxAndTelegram(ctx context.Context, bot *Bot, db *storage.DB, cfg Config) error {
 	history, err := buildEveningReportHistory(db, cfg)
 	if err != nil {
@@ -443,7 +480,8 @@ func PublishEveningToInboxAndTelegram(ctx context.Context, bot *Bot, db *storage
 	}
 	key := "report:evening:" + history.LocalDate
 	history.DeliveryKey = &key
-	inboxID, _, err := db.PublishEveningReportToInbox(ctx, history)
+	telegramAllowed := bot != nil && cfg.Enabled()
+	inboxID, _, err := db.PublishEveningReportToInbox(ctx, history, telegramAllowed)
 	if err != nil {
 		return err
 	}
@@ -451,8 +489,7 @@ func PublishEveningToInboxAndTelegram(ctx context.Context, bot *Bot, db *storage
 		// Already settled via Telegram earlier today (anti-retroactivity).
 		return nil
 	}
-	if bot == nil || !cfg.Enabled() || !storage.IsTelegramNotificationsEnabled(db) {
-		_ = db.MarkReportTelegramDisabled(ctx, key)
+	if !telegramAllowed {
 		return nil
 	}
 	_, err = DeliverArchivedReportToTelegram(db, bot, cfg, history)
@@ -466,7 +503,14 @@ func DeliverArchivedReportToTelegram(db *storage.DB, bot *Bot, cfg Config, histo
 	if db == nil || bot == nil || history == nil || history.ID == uuid.Nil || history.DeliveryKey == nil || *history.DeliveryKey == "" {
 		return false, nil
 	}
-	if cfg.TelegramDisabled || !cfg.HasTelegramCredentials() || !storage.IsTelegramNotificationsEnabled(db) {
+	if cfg.TelegramDisabled || !cfg.HasTelegramCredentials() {
+		return false, nil
+	}
+	enabled, checkErr := checkTelegramNotificationsEnabled(db)
+	if checkErr != nil {
+		return false, checkErr
+	}
+	if !enabled {
 		return false, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
@@ -486,10 +530,17 @@ func RetryPendingInboxTelegramReports(ctx context.Context, bot *Bot, db *storage
 	if db == nil || bot == nil || localDate == "" {
 		return 0, nil
 	}
-	if !storage.IsInAppInboxEnabled(db) || cfg.TelegramDisabled || !cfg.HasTelegramCredentials() || !storage.IsTelegramNotificationsEnabled(db) {
+	if !storage.IsInAppInboxEnabled(db) || cfg.TelegramDisabled || !cfg.HasTelegramCredentials() {
 		return 0, nil
 	}
-	reports, err := db.ListRetryableInboxTelegramReports(ctx, localDate, kinds, 3, 20)
+	enabled, checkErr := checkTelegramNotificationsEnabled(db)
+	if checkErr != nil {
+		return 0, checkErr
+	}
+	if !enabled {
+		return 0, nil
+	}
+	reports, err := db.ListRetryableInboxTelegramReports(ctx, localDate, kinds, storage.MaxReportProviderRejectionCycles, 20)
 	if err != nil {
 		return 0, err
 	}
@@ -499,7 +550,12 @@ func RetryPendingInboxTelegramReports(ctx context.Context, bot *Bot, db *storage
 		if ctx.Err() != nil {
 			break
 		}
-		if !storage.IsTelegramNotificationsEnabled(db) {
+		enabled, checkErr := checkTelegramNotificationsEnabled(db)
+		if checkErr != nil {
+			errs = append(errs, checkErr)
+			break
+		}
+		if !enabled {
 			break
 		}
 		reserved, sendErr := DeliverArchivedReportToTelegram(db, bot, cfg, &reports[i])
@@ -553,7 +609,17 @@ func buildEveningReportHistory(db *storage.DB, cfg Config) (*storage.ReportHisto
 }
 
 func sendEveningReport(bot *Bot, db *storage.DB, cfg Config, policy reportDeliveryPolicy) error {
-	if cfg.TelegramDisabled || !storage.IsTelegramNotificationsEnabled(db) {
+	if cfg.TelegramDisabled {
+		if policy == reportDeliveryPreview {
+			return ErrTelegramNotificationsDisabled
+		}
+		return nil
+	}
+	enabled, checkErr := checkTelegramNotificationsEnabled(db)
+	if checkErr != nil {
+		return checkErr
+	}
+	if !enabled {
 		if policy == reportDeliveryPreview {
 			return ErrTelegramNotificationsDisabled
 		}
@@ -621,9 +687,26 @@ func sendArchivedReport(policy reportDeliveryPolicy, db *storage.DB, bot *Bot, c
 
 // sendReservedArchivedReport handles transport for an already committed lease.
 // It enforces the live telegram_notifications_enabled barrier right before any
-// Telegram HTTP call so mid-flight opt-outs and retries never leak messages.
+// Telegram HTTP call so mid-flight opt-outs and DB read failures never leak
+// messages; DB read failures finalize as failed/archive_unavailable so delivery
+// stays safely retryable once PostgreSQL recovers.
 func sendReservedArchivedReport(policy reportDeliveryPolicy, db *storage.DB, bot *Bot, cfg Config, key string, history *storage.ReportHistory, token uuid.UUID) (bool, error) {
-	if bot == nil || cfg.TelegramDisabled || !storage.IsTelegramNotificationsEnabled(db) {
+	if bot == nil || cfg.TelegramDisabled {
+		if policy == reportDeliveryDurable && db != nil && key != "" && token != uuid.Nil {
+			_ = completeNotificationDelivery(db, key, token, "failed", "telegram_disabled")
+		}
+		if policy == reportDeliveryPreview {
+			return false, ErrTelegramNotificationsDisabled
+		}
+		return false, nil
+	}
+	if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+		prepErr := reportArchivePreparationError{cause: checkErr}
+		if policy == reportDeliveryDurable && db != nil && key != "" && token != uuid.Nil {
+			_ = completeNotificationDelivery(db, key, token, "failed", "archive_unavailable")
+		}
+		return false, prepErr
+	} else if !enabled {
 		if policy == reportDeliveryDurable && db != nil && key != "" && token != uuid.Nil {
 			_ = completeNotificationDelivery(db, key, token, "failed", "telegram_disabled")
 		}
@@ -634,7 +717,9 @@ func sendReservedArchivedReport(policy reportDeliveryPolicy, db *storage.DB, bot
 	}
 	var err error
 	attempt := func(format, body string) (error, bool) {
-		if !storage.IsTelegramNotificationsEnabled(db) {
+		if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+			return reportArchivePreparationError{cause: checkErr}, false
+		} else if !enabled {
 			return ErrTelegramNotificationsDisabled, false
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), notificationDeliveryTimeout)
@@ -646,7 +731,12 @@ func sendReservedArchivedReport(policy reportDeliveryPolicy, db *storage.DB, bot
 		if hookPtr := beforeReportAttemptSendHook.Load(); hookPtr != nil && *hookPtr != nil {
 			(*hookPtr)()
 		}
-		if !storage.IsTelegramNotificationsEnabled(db) {
+		if enabled, checkErr := checkTelegramNotificationsEnabled(db); checkErr != nil {
+			ctx, cancel = context.WithTimeout(context.Background(), notificationDeliveryTimeout)
+			persistErr := db.CompleteReportAttempt(ctx, id, "failed", "archive_unavailable", nil)
+			cancel()
+			return reportArchivePreparationError{cause: errors.Join(checkErr, persistErr)}, false
+		} else if !enabled {
 			ctx, cancel = context.WithTimeout(context.Background(), notificationDeliveryTimeout)
 			persistErr := db.CompleteReportAttempt(ctx, id, "failed", "telegram_disabled", nil)
 			cancel()

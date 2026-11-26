@@ -227,7 +227,8 @@ func fireOne(bot *Bot, db *storage.DB, cfg Config, baseURL string, p ProactiveNo
 			inboxKind = storage.InboxKindWeeklyDigest
 			logicalKey = storage.InboxKindWeeklyDigest + ":" + dateStr
 		}
-		inboxID, created, err := db.PublishProactiveToInbox(ctx, &history, logicalKey, deliveryKey, nil, now, loc, inboxKind, 24*time.Hour)
+		telegramAllowed := bot != nil && cfg.Enabled()
+		inboxID, created, err := db.PublishProactiveToInbox(ctx, &history, logicalKey, deliveryKey, nil, now, loc, inboxKind, 24*time.Hour, telegramAllowed)
 		if err != nil {
 			log.Printf("proactive %s: publish inbox error: %v", p.Name, err)
 			return
@@ -240,12 +241,10 @@ func fireOne(bot *Bot, db *storage.DB, cfg Config, baseURL string, p ProactiveNo
 			// failure never breaks cadence or causes duplicate Inbox cards.
 			db.SaveSettings(map[string]string{key: dateStr})
 		}
-		if bot != nil && cfg.Enabled() && storage.IsTelegramNotificationsEnabled(db) {
+		if telegramAllowed {
 			if _, sendErr := DeliverArchivedReportToTelegram(db, bot, cfg, &history); sendErr != nil {
 				log.Printf("proactive %s: telegram delivery error (inbox card preserved): %v", p.Name, sendErr)
 			}
-		} else if history.DeliveryKey != nil {
-			_ = db.MarkReportTelegramDisabled(ctx, *history.DeliveryKey)
 		}
 		return
 	}

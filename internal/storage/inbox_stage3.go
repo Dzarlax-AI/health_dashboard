@@ -74,21 +74,6 @@ func (s *DB) GetPublishedEveningInboxReport(ctx context.Context, localDate strin
 	return &h, inboxID, nil
 }
 
-// MarkReportTelegramDisabled idempotently marks a durable report delivery key
-// as intentionally skipped because Telegram delivery was disabled or
-// unconfigured when the Inbox card was published, preventing retroactive sends
-// if Telegram is enabled later on the same day.
-func (s *DB) MarkReportTelegramDisabled(ctx context.Context, deliveryKey string) error {
-	if s == nil || deliveryKey == "" {
-		return nil
-	}
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO notification_deliveries(delivery_key, status, lease_token, reserved_at, completed_at, error_code)
-		VALUES($1, 'failed', $2, clock_timestamp(), clock_timestamp(), 'telegram_disabled')
-		ON CONFLICT DO NOTHING`, deliveryKey, uuid.New())
-	return err
-}
-
 // ListRetryableInboxTelegramReports returns today's already-published Inbox
 // reports whose Telegram delivery has not yet been reserved (e.g. crash between
 // Inbox commit and first reservation), previously failed with a retryable error,
@@ -173,10 +158,13 @@ func (s *DB) ListRetryableInboxTelegramReports(ctx context.Context, localDate st
 }
 
 // PublishEveningReportToInbox atomically archives a durable evening report in
-// report_history, inserts its inbox_items card, and enqueues APNs push deliveries
-// on first creation only. It intentionally does NOT write notification_deliveries
-// so Inbox-only profiles never leave dangling Telegram reservations.
-func (s *DB) PublishEveningReportToInbox(ctx context.Context, h *ReportHistory) (uuid.UUID, bool, error) {
+// report_history, inserts its inbox_items card, enqueues APNs push deliveries
+// on first creation only, and atomically records whether Telegram delivery is
+// eligible for this publication. When telegramDeliveryAllowed is false (e.g.
+// Telegram bot is unconfigured) or telegram_notifications_enabled is false, a
+// terminal failed/telegram_disabled marker is committed in the same transaction
+// so later enabling/configuring Telegram cannot retroactively send old cards.
+func (s *DB) PublishEveningReportToInbox(ctx context.Context, h *ReportHistory, telegramDeliveryAllowed bool) (uuid.UUID, bool, error) {
 	if h == nil || h.IsPreview || h.Kind != "evening" || h.LocalDate == "" || h.DeliveryKey == nil || *h.DeliveryKey == "" {
 		return uuid.Nil, false, errors.New("invalid evening inbox report")
 	}
@@ -250,7 +238,11 @@ func (s *DB) PublishEveningReportToInbox(ctx context.Context, h *ReportHistory) 
 			return uuid.Nil, false, err
 		}
 	}
-	if !IsTelegramNotificationsEnabled(s) {
+	telegramEnabled, err := telegramNotificationsEnabledTx(ctx, tx)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	if !telegramDeliveryAllowed || !telegramEnabled {
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO notification_deliveries(delivery_key, status, lease_token, reserved_at, completed_at, error_code)
 			VALUES($1, 'failed', $2, clock_timestamp(), clock_timestamp(), 'telegram_disabled')
@@ -278,6 +270,7 @@ func (s *DB) PublishProactiveToInbox(
 	loc *time.Location,
 	inboxKind string,
 	pushTTL time.Duration,
+	telegramDeliveryAllowed bool,
 ) (uuid.UUID, bool, error) {
 	if h == nil || h.Kind != "proactive" || deliveryKey == "" || loc == nil || h.IsPreview || !IsReportInboxKind(inboxKind) {
 		return uuid.Nil, false, errors.New("invalid proactive inbox publication")
@@ -470,7 +463,11 @@ func (s *DB) PublishProactiveToInbox(
 			return uuid.Nil, false, err
 		}
 	}
-	if !IsTelegramNotificationsEnabled(s) {
+	telegramEnabled, err := telegramNotificationsEnabledTx(ctx, tx)
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	if !telegramDeliveryAllowed || !telegramEnabled {
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO notification_deliveries(delivery_key, status, lease_token, reserved_at, completed_at, error_code)
 			VALUES($1, 'failed', $2, clock_timestamp(), clock_timestamp(), 'telegram_disabled')

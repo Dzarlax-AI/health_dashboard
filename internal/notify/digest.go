@@ -20,7 +20,14 @@ func SendWeeklyDigestForce(bot *Bot, db *storage.DB, cfg Config, days int) error
 	if !cfg.HasTelegramCredentials() {
 		return fmt.Errorf("Telegram not configured")
 	}
-	if cfg.TelegramDisabled || !storage.IsTelegramNotificationsEnabled(db) {
+	if cfg.TelegramDisabled {
+		return ErrTelegramNotificationsDisabled
+	}
+	enabled, checkErr := checkTelegramNotificationsEnabled(db)
+	if checkErr != nil {
+		return checkErr
+	}
+	if !enabled {
 		return ErrTelegramNotificationsDisabled
 	}
 	stats, err := db.WeeklyQualityReport(days)

@@ -138,13 +138,10 @@ func maybeFireSleepAnalysisUpdate(ctx context.Context, bot *Bot, db *storage.DB,
 	aiMetadata, _ := json.Marshal(map[string]any{"sleep_analysis_source": current.current.Source, "sleep_analysis_identity": current.current.Identity})
 	h := storage.ReportHistory{Kind: "proactive", LocalDate: date, Timezone: cfg.location().String(), Language: cfg.Lang, PlainBody: msg, DecisionID: decisionID, Context: contextJSON, AIMetadata: aiMetadata, FallbackReason: "sleep_analysis_revision"}
 	if storage.IsInAppInboxEnabled(db) {
-		inboxID, _, err := db.PublishProactiveToInbox(ctx, &h, "", "proactive:sleep-analysis:pending", &current.event, now, cfg.location(), storage.InboxKindSleepUpdate, 8*time.Hour)
-		if err == nil && inboxID != (storage.ReportHistory{}.ID) {
-			if bot != nil && cfg.Enabled() && storage.IsTelegramNotificationsEnabled(db) {
-				_, _ = DeliverArchivedReportToTelegram(db, bot, cfg, &h)
-			} else if h.DeliveryKey != nil {
-				_ = db.MarkReportTelegramDisabled(ctx, *h.DeliveryKey)
-			}
+		telegramAllowed := bot != nil && cfg.Enabled()
+		inboxID, _, err := db.PublishProactiveToInbox(ctx, &h, "", "proactive:sleep-analysis:pending", &current.event, now, cfg.location(), storage.InboxKindSleepUpdate, 8*time.Hour, telegramAllowed)
+		if err == nil && inboxID != (storage.ReportHistory{}.ID) && telegramAllowed {
+			_, _ = DeliverArchivedReportToTelegram(db, bot, cfg, &h)
 		}
 		return true
 	}
