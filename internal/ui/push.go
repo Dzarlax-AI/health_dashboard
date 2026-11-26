@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -63,15 +64,24 @@ func (h *Handler) pushDeviceRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var attemptID uuid.UUID
+	if req.RegistrationAttemptID != nil {
+		attemptID, err = uuid.Parse(strings.TrimSpace(*req.RegistrationAttemptID))
+		if err != nil || attemptID == uuid.Nil {
+			jsonError(w, "invalid registration_attempt_id", http.StatusBadRequest)
+			return
+		}
+	}
 	dev, err := db.UpsertPushDevice(r.Context(), storage.UpsertPushDeviceInput{
-		DeviceID:  deviceID,
-		APNsToken: req.APNsToken,
-		APNsEnv:   req.APNsEnv,
-		BundleID:  req.BundleID,
-		Locale:    req.Locale,
+		RegistrationAttemptID: attemptID,
+		DeviceID:              deviceID,
+		APNsToken:             req.APNsToken,
+		APNsEnv:               req.APNsEnv,
+		BundleID:              req.BundleID,
+		Locale:                req.Locale,
 	})
 	if err != nil {
-		jsonError(w, "failed to save push device", http.StatusInternalServerError)
+		writePushDeviceError(w, err, "failed to save push device")
 		return
 	}
 	jsonResponse(w, clientapi.PushDeviceRegisterResponse{
@@ -83,7 +93,7 @@ func (h *Handler) pushDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// pushDeviceDelete disables a specific (device_id, binding_id) registration in
+// pushDeviceDelete disables a specific binding or cancels a registration attempt in
 // the authenticated tenant schema. Intentionally executes even when
 // apns_push_enabled / in_app_inbox_enabled is disabled so queued offline
 // deregistrations still deactivate old bindings cleanly.
@@ -94,14 +104,41 @@ func (h *Handler) pushDeviceDelete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid device_id", http.StatusBadRequest)
 		return
 	}
-	bindingID, err := uuid.Parse(strings.TrimSpace(r.URL.Query().Get("binding_id")))
-	if err != nil || bindingID == uuid.Nil {
-		jsonError(w, "invalid binding_id", http.StatusBadRequest)
+	query := r.URL.Query()
+	bindings, attempts := query["binding_id"], query["registration_attempt_id"]
+	if len(bindings)+len(attempts) != 1 {
+		jsonError(w, "send exactly one binding_id or registration_attempt_id", http.StatusBadRequest)
 		return
 	}
-	if _, err := db.DisablePushDeviceBinding(r.Context(), deviceID, bindingID); err != nil {
-		jsonError(w, "failed to disable push device", http.StatusInternalServerError)
+	if len(attempts) == 1 {
+		attemptID, parseErr := uuid.Parse(strings.TrimSpace(attempts[0]))
+		if parseErr != nil || attemptID == uuid.Nil {
+			jsonError(w, "invalid registration_attempt_id", http.StatusBadRequest)
+			return
+		}
+		err = db.CancelPushRegistrationAttempt(r.Context(), deviceID, attemptID)
+	} else {
+		bindingID, parseErr := uuid.Parse(strings.TrimSpace(bindings[0]))
+		if parseErr != nil || bindingID == uuid.Nil {
+			jsonError(w, "invalid binding_id", http.StatusBadRequest)
+			return
+		}
+		_, err = db.DisablePushDeviceBinding(r.Context(), deviceID, bindingID)
+	}
+	if err != nil {
+		writePushDeviceError(w, err, "failed to disable push device")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func writePushDeviceError(w http.ResponseWriter, err error, fallback string) {
+	switch {
+	case errors.Is(err, storage.ErrInvalidPushRegistrationAttempt):
+		jsonError(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, storage.ErrPushRegistrationAttemptConflict):
+		jsonError(w, err.Error(), http.StatusConflict)
+	default:
+		jsonError(w, fallback, http.StatusInternalServerError)
+	}
 }

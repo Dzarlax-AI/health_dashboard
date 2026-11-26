@@ -73,6 +73,19 @@ CREATE INDEX IF NOT EXISTS idx_push_devices_active
 	ON push_devices (device_id)
 	WHERE enabled AND invalidated_at IS NULL;
 
+CREATE TABLE IF NOT EXISTS push_registration_attempts (
+	id                   UUID PRIMARY KEY,
+	device_id            UUID NOT NULL,
+	request_hash         BYTEA,
+	binding_id           UUID,
+	registration_version BIGINT,
+	apns_env             TEXT,
+	cancelled_at         TIMESTAMPTZ,
+	created_at           TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_push_registration_attempts_created
+	ON push_registration_attempts (created_at, id);
+
 CREATE TABLE IF NOT EXISTS push_deliveries (
 	id                   UUID PRIMARY KEY,
 	delivery_key         TEXT NOT NULL UNIQUE,
@@ -175,11 +188,12 @@ func PushTokenHash(token string) []byte {
 }
 
 type UpsertPushDeviceInput struct {
-	DeviceID  uuid.UUID
-	APNsToken string
-	APNsEnv   string
-	BundleID  string
-	Locale    string
+	RegistrationAttemptID uuid.UUID
+	DeviceID              uuid.UUID
+	APNsToken             string
+	APNsEnv               string
+	BundleID              string
+	Locale                string
 }
 
 type PushDevice struct {
@@ -228,8 +242,19 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('push_devices:' || current_schema()))`); err != nil {
+	if err = lockPushRegistrations(ctx, tx); err != nil {
 		return PushDevice{}, err
+	}
+	var requestHash []byte
+	if in.RegistrationAttemptID != uuid.Nil {
+		hash := pushRegistrationRequestHash(in)
+		requestHash = hash[:]
+		var repeated bool
+		var result PushDevice
+		result, repeated, err = replayPushRegistration(ctx, tx, in, requestHash)
+		if err != nil || repeated {
+			return result, err
+		}
 	}
 
 	// Atomically deactivate any other device_id holding this active token in this tenant.
@@ -290,7 +315,7 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 		if !existingEnabled || existingInvalidated != nil {
 			bindingID = uuid.New()
 			version++
-		} else if tokenChanged {
+		} else if tokenChanged || in.RegistrationAttemptID != uuid.Nil {
 			version++
 		}
 		err = tx.QueryRow(ctx, `
@@ -322,6 +347,14 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 	}
 	if err != nil {
 		return PushDevice{}, err
+	}
+	if in.RegistrationAttemptID != uuid.Nil {
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO push_registration_attempts (id, device_id, request_hash, binding_id, registration_version, apns_env)
+			VALUES ($1, $2, $3, $4, $5, $6)`, in.RegistrationAttemptID, out.DeviceID,
+			requestHash, out.BindingID, out.RegistrationVersion, out.APNsEnv); err != nil {
+			return PushDevice{}, err
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return PushDevice{}, err
@@ -441,6 +474,10 @@ func (s *DB) HousekeepPushDeliveries(ctx context.Context, limit int) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	if err = prunePushRegistrationAttempts(ctx, tx, limit); err != nil {
+		return err
+	}
 
 	if _, err = tx.Exec(ctx, `
 		UPDATE push_devices

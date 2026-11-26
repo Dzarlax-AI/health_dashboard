@@ -479,3 +479,106 @@ func TestPushPublicationWorksWithSinglePoolConnection(t *testing.T) {
 		t.Fatalf("publish check-in on a single connection: %v", err)
 	}
 }
+
+func TestPushRegistrationAttemptReplayAndCancellation(t *testing.T) {
+	db, cleanup := setupInboxTestDB(t, "push_attempt_recovery")
+	defer cleanup()
+	ctx := context.Background()
+
+	newAttemptID := func() uuid.UUID {
+		id, err := uuid.NewV7()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	in := UpsertPushDeviceInput{
+		DeviceID: uuid.New(), APNsToken: strings.Repeat("c", 64), APNsEnv: PushEnvProduction,
+		BundleID: "com.dzarlax.health-sync", Locale: "en", RegistrationAttemptID: newAttemptID(),
+	}
+	first, err := db.UpsertPushDevice(ctx, in)
+	if err != nil {
+		t.Fatalf("initial registration: %v", err)
+	}
+	replay, err := db.UpsertPushDevice(ctx, in)
+	if err != nil || replay.BindingID != first.BindingID || replay.RegistrationVersion != first.RegistrationVersion || !replay.Enabled {
+		t.Fatalf("unexpected replay: binding %s version %d enabled %t, error %v", replay.BindingID, replay.RegistrationVersion, replay.Enabled, err)
+	}
+	otherRequest := in
+	otherRequest.Locale = "ru"
+	if _, err := db.UpsertPushDevice(ctx, otherRequest); !errors.Is(err, ErrPushRegistrationAttemptConflict) {
+		t.Fatalf("changed payload replay: %v", err)
+	}
+	otherRequest = in
+	otherRequest.DeviceID = uuid.New()
+	if _, err := db.UpsertPushDevice(ctx, otherRequest); !errors.Is(err, ErrPushRegistrationAttemptConflict) {
+		t.Fatalf("wrong device replay: %v", err)
+	}
+	if err := db.CancelPushRegistrationAttempt(ctx, otherRequest.DeviceID, in.RegistrationAttemptID); !errors.Is(err, ErrPushRegistrationAttemptConflict) {
+		t.Fatalf("wrong device cancellation: %v", err)
+	}
+
+	next := in
+	next.RegistrationAttemptID = newAttemptID()
+	newer, err := db.UpsertPushDevice(ctx, next)
+	if err != nil || newer.BindingID != first.BindingID || newer.RegistrationVersion != first.RegistrationVersion+1 {
+		t.Fatalf("fresh same-token attempt must advance registration version: %+v, %v", newer, err)
+	}
+	if err := db.CancelPushRegistrationAttempt(ctx, in.DeviceID, in.RegistrationAttemptID); err != nil {
+		t.Fatalf("cancel old attempt: %v", err)
+	}
+	if got, err := db.UpsertPushDevice(ctx, next); err != nil || !got.Enabled {
+		t.Fatalf("old cancellation disabled the current attempt: %v, %v", got.Enabled, err)
+	}
+	if err := db.CancelPushRegistrationAttempt(ctx, next.DeviceID, next.RegistrationAttemptID); err != nil {
+		t.Fatalf("cancel committed attempt after losing its response: %v", err)
+	}
+	if err := db.CancelPushRegistrationAttempt(ctx, next.DeviceID, next.RegistrationAttemptID); err != nil {
+		t.Fatalf("repeat exact cancellation: %v", err)
+	}
+	if _, err := db.UpsertPushDevice(ctx, next); !errors.Is(err, ErrPushRegistrationAttemptConflict) {
+		t.Fatalf("cancelled registration replay: %v", err)
+	}
+	devices, err := db.ListPushDevices(ctx)
+	if err != nil || len(devices) != 1 || devices[0].Enabled {
+		t.Fatalf("device should remain disabled after cancellation: count=%d error=%v", len(devices), err)
+	}
+
+	pending := in
+	pending.DeviceID = uuid.New()
+	pending.RegistrationAttemptID = newAttemptID()
+	if err := db.CancelPushRegistrationAttempt(ctx, pending.DeviceID, pending.RegistrationAttemptID); err != nil {
+		t.Fatalf("cancel before registration: %v", err)
+	}
+	if _, err := db.UpsertPushDevice(ctx, pending); !errors.Is(err, ErrPushRegistrationAttemptConflict) {
+		t.Fatalf("late POST after cancellation: %v", err)
+	}
+	devices, err = db.ListPushDevices(ctx)
+	if err != nil || len(devices) != 1 {
+		t.Fatalf("late POST created a device: count=%d error=%v", len(devices), err)
+	}
+}
+
+func TestPushRegistrationAttemptExpiryRejectsUnrecordedReplay(t *testing.T) {
+	db, cleanup := setupInboxTestDB(t, "push_attempt_expiry")
+	defer cleanup()
+	ctx := context.Background()
+	attemptID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldMS := time.Now().Add(-8 * 24 * time.Hour).UnixMilli()
+	for i := range 6 {
+		attemptID[i] = byte(oldMS >> (8 * (5 - i)))
+	}
+	in := UpsertPushDeviceInput{
+		DeviceID: uuid.New(), APNsToken: strings.Repeat("c", 64), APNsEnv: PushEnvProduction,
+		BundleID: "com.dzarlax.health-sync", Locale: "en", RegistrationAttemptID: attemptID,
+	}
+	if err := db.CancelPushRegistrationAttempt(ctx, in.DeviceID, attemptID); err != nil {
+		t.Fatalf("expired absent attempt should be safe to cancel: %v", err)
+	}
+	if _, err := db.UpsertPushDevice(ctx, in); !errors.Is(err, ErrPushRegistrationAttemptConflict) {
+		t.Fatalf("expired unrecorded replay should be rejected: %v", err)
+	}
+}

@@ -123,6 +123,43 @@ func TestPushDeviceEndpointsGateBindingDeleteAndIOSPushChannel(t *testing.T) {
 		t.Fatalf("foreign tenant must not affect this tenant's device: %+v err=%v", devs, err)
 	}
 
+	// Attempt cancellation is scoped to the authenticated tenant even when that
+	// tenant has the same device and attempt IDs.
+	attemptID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptText := attemptID.String()
+	var request clientapi.PushDeviceRegisterRequest
+	if err := json.Unmarshal([]byte(validBody(tok)), &request); err != nil {
+		t.Fatal(err)
+	}
+	request.RegistrationAttemptID = &attemptText
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/api/push/devices", bytes.NewReader(data)).WithContext(adminContext(db, schema))
+	h.pushDeviceRegister(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("attempt registration status=%d body=%s", w.Code, w.Body.String())
+	}
+	attemptPath := "/api/push/devices/" + devID.String() + "?registration_attempt_id=" + attemptText
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodDelete, attemptPath, nil).WithContext(adminContext(otherDB, otherSchema))
+	r.SetPathValue("device_id", devID.String())
+	h.pushDeviceDelete(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("foreign attempt cancellation status=%d, want 204", w.Code)
+	}
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/api/push/devices", bytes.NewReader(data)).WithContext(adminContext(db, schema))
+	h.pushDeviceRegister(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("foreign tenant cannot cancel this tenant's attempt: status=%d", w.Code)
+	}
+
 	// 5. Disable APNs flag, then send DELETE with exact binding_id -> MUST still succeed (204) and disable binding!
 	if err := db.SaveSettings(map[string]string{storage.SettingAPNSPushEnabled: "false"}); err != nil {
 		t.Fatal(err)
@@ -138,6 +175,25 @@ func TestPushDeviceEndpointsGateBindingDeleteAndIOSPushChannel(t *testing.T) {
 	devs, _ = db.ListPushDevices(ctx)
 	if !devs[0].Enabled {
 		t.Fatal("wrong binding_id must not disable active device")
+	}
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodDelete, attemptPath+"&binding_id="+reg.BindingID.String(), nil).WithContext(adminContext(db, schema))
+	r.SetPathValue("device_id", devID.String())
+	h.pushDeviceDelete(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("delete with both selectors status=%d, want 400", w.Code)
+	}
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodDelete, attemptPath, nil).WithContext(adminContext(db, schema))
+	r.SetPathValue("device_id", devID.String())
+	h.pushDeviceDelete(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("attempt cancellation with APNs disabled status=%d, want 204", w.Code)
+	}
+	devs, err = db.ListPushDevices(ctx)
+	if err != nil || len(devs) != 1 || devs[0].Enabled {
+		t.Fatalf("attempt cancellation must disable the device with APNs disabled (err=%v)", err)
 	}
 
 	// Exact binding_id disables even with apns_push_enabled=false

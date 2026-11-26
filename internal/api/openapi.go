@@ -542,12 +542,14 @@ func pushDeviceRegisterOperation() map[string]any {
 	return map[string]any{
 		"operationId": "registerPushDevice",
 		"summary":     "Register or refresh an iOS APNs device binding for the authenticated profile",
+		"description": "An optional registration_attempt_id must be a UUIDv7. Retry the same request with that ID within seven days. Replays do not extend the registration lifetime.",
 		"requestBody": jsonRequestBody("PushDeviceRegisterRequest"),
 		"responses": map[string]any{
 			"200": jsonResponseRef("PushDeviceRegisterResponse"),
-			"400": jsonErrorResponse("Invalid JSON, device_id, apns_token, apns_env, bundle_id, or locale."),
+			"400": jsonErrorResponse("Invalid JSON, device_id, apns_token, apns_env, bundle_id, locale, or registration_attempt_id."),
 			"401": jsonErrorResponse("Authentication required."),
 			"404": plainTextResponse("Direct APNs push is disabled for this profile or server."),
+			"409": jsonErrorResponse("Registration attempt cancelled, expired, superseded, or already used by another request."),
 			"500": jsonErrorResponse("The backend could not save the push device registration."),
 		},
 	}
@@ -556,7 +558,8 @@ func pushDeviceRegisterOperation() map[string]any {
 func pushDeviceDeleteOperation() map[string]any {
 	return map[string]any{
 		"operationId": "deletePushDeviceBinding",
-		"summary":     "Disable a specific iOS push device binding even when APNs delivery is toggled off",
+		"summary":     "Disable an iOS push binding or cancel a registration attempt",
+		"description": "Supply exactly one of binding_id or registration_attempt_id. Cleanup works even when APNs delivery is disabled. Cancelling an attempt prevents late registration and only disables the version created by that attempt.",
 		"parameters": []any{
 			map[string]any{
 				"name":     "device_id",
@@ -567,16 +570,24 @@ func pushDeviceDeleteOperation() map[string]any {
 			map[string]any{
 				"name":        "binding_id",
 				"in":          "query",
-				"required":    true,
+				"required":    false,
 				"description": "Opaque binding UUID returned when this device registered with this profile.",
+				"schema":      map[string]any{"type": "string", "format": "uuid"},
+			},
+			map[string]any{
+				"name":        "registration_attempt_id",
+				"in":          "query",
+				"required":    false,
+				"description": "UUIDv7 saved before sending the registration request.",
 				"schema":      map[string]any{"type": "string", "format": "uuid"},
 			},
 		},
 		"responses": map[string]any{
-			"204": map[string]any{"description": "Device binding disabled (or already absent in this profile)."},
-			"400": jsonErrorResponse("Invalid device_id or binding_id."),
+			"204": map[string]any{"description": "The binding is disabled, the attempt is cancelled, or the target is already absent."},
+			"400": jsonErrorResponse("Invalid device_id, binding_id, or registration_attempt_id."),
 			"401": jsonErrorResponse("Authentication required."),
-			"500": jsonErrorResponse("The backend could not disable the push device binding."),
+			"409": jsonErrorResponse("Registration attempt belongs to another device."),
+			"500": jsonErrorResponse("The backend could not complete push device cleanup."),
 		},
 	}
 }

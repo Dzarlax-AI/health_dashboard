@@ -3,11 +3,12 @@ package api
 import "github.com/google/uuid"
 
 type PushDeviceRegisterRequest struct {
-	DeviceID  string `json:"device_id"`
-	APNsToken string `json:"apns_token"`
-	APNsEnv   string `json:"apns_env" jsonschema:"enum=production,enum=sandbox"`
-	BundleID  string `json:"bundle_id"`
-	Locale    string `json:"locale" jsonschema:"enum=en,enum=ru,enum=sr"`
+	RegistrationAttemptID *string `json:"registration_attempt_id,omitempty"`
+	DeviceID              string  `json:"device_id"`
+	APNsToken             string  `json:"apns_token"`
+	APNsEnv               string  `json:"apns_env" jsonschema:"enum=production,enum=sandbox"`
+	BundleID              string  `json:"bundle_id"`
+	Locale                string  `json:"locale" jsonschema:"enum=en,enum=ru,enum=sr"`
 }
 
 type PushDeviceRegisterResponse struct {
