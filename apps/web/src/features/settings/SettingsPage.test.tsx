@@ -171,6 +171,8 @@ describe("SettingsPage", () => {
       telegram_notifications_enabled: true,
       inbox_enabled: true,
       apns_push_enabled: true,
+      apns_push_configured: true,
+      apns_transport_mode: "direct",
       telegram_configured: true,
       active_push_devices_count: 0,
     });
@@ -192,6 +194,8 @@ describe("SettingsPage", () => {
         telegram_notifications_enabled: false,
         inbox_enabled: true,
         apns_push_enabled: true,
+        apns_push_configured: true,
+        apns_transport_mode: "direct",
         telegram_configured: true,
         active_push_devices_count: 0,
       });

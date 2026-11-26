@@ -64,7 +64,7 @@ type Handler struct {
 	webhookRegistrar  notify.WebhookRegistrar
 	webhookBaseURL    string
 	onCheckinAnswered func(db *storage.DB, schema string)
-	apnsSender        *apnspush.Sender
+	apnsTransport     *apnspush.TransportConfig
 }
 
 func New(mgr *tenants.Manager, reg *registry.Registry, trustFwdAuth bool) *Handler {

@@ -185,13 +185,17 @@ func main() {
 		return
 	}
 
-	apnsSender, apnsErr := apnspush.LoadSenderFromEnv()
+	apnsConfig, apnsErr := apnspush.LoadTransportFromEnv()
 	if apnsErr != nil {
-		log.Printf("apns: configuration invalid; Direct APNs push disabled: %v", apnsErr)
+		log.Printf("apns: configuration invalid; APNs push disabled: %v", apnsErr)
 	}
-	if apnsSender != nil {
-		defer apnsSender.CloseIdleConnections()
-		log.Printf("apns: Direct APNs configured (topic=%s)", apnsSender.EffectiveTopic())
+	if apnsConfig != nil {
+		defer apnsConfig.CloseIdleConnections()
+		if apnsConfig.Mode == apnspush.TransportModeRelay {
+			log.Printf("apns: APNs Relay configured (url=%s topic=%s)", apnsConfig.RelayURL, apnsConfig.EffectiveTopic())
+		} else {
+			log.Printf("apns: Direct APNs configured (topic=%s)", apnsConfig.EffectiveTopic())
+		}
 	}
 
 	// Attempt to create health_registry schema and users table.
@@ -244,7 +248,7 @@ func main() {
 		}
 
 		runSingleTenant(ctx, addr, baseURL, trustFwdAuth, trustedFwdAuthNets, apiKey, mgr, nil, mcpOAuth, mcpAccessConfig, mcpAccessVerifier,
-			legacyDB, "health", envNotifyDefaults, envAIDefaults, hrZones, apnsSender)
+			legacyDB, "health", envNotifyDefaults, envAIDefaults, hrZones, apnsConfig)
 		return
 	}
 	if accessConfig != nil && reg.IsEmpty(ctx) {
@@ -332,7 +336,7 @@ func main() {
 		if err := mgr.VerifyTenantContract(ctx, u.SchemaName, db); err != nil {
 			log.Fatalf("startup tenant contract gate for %s: %v", u.SchemaName, err)
 		}
-		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL, todayDerived, startupBackfills, apnsSender)
+		startTenant(ctx, mgr, reg, db, u.SchemaName, envNotifyDefaults, envAIDefaults, baseURL, todayDerived, startupBackfills, apnsConfig)
 	}
 
 	if len(users) == 0 {
@@ -372,7 +376,7 @@ func main() {
 	uiHandler.SetTrustedForwardAuthNetworkList(trustedFwdAuthNets)
 	uiHandler.SetSetupToken(strings.TrimSpace(os.Getenv("SETUP_TOKEN")))
 	uiHandler.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
-	uiHandler.ConfigureAPNs(apnsSender)
+	uiHandler.ConfigureAPNsTransport(apnsConfig)
 	uiHandler.OnTenantCreated(func(schema string) {
 		db, err := mgr.GetOrCreate(ctx, schema)
 		if err != nil {
@@ -387,7 +391,7 @@ func main() {
 			log.Printf("new tenant contract gate for %s: %v", schema, err)
 			return
 		}
-		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL, todayDerived, startupBackfills, apnsSender)
+		startTenant(ctx, mgr, reg, db, schema, envNotifyDefaults, envAIDefaults, baseURL, todayDerived, startupBackfills, apnsConfig)
 	})
 	uiHandler.Register(mux)
 	mcpserver.RegisterAccess(mux, mgr, mcpAccessConfig, mcpAccessVerifier)
@@ -450,9 +454,9 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	mgr *tenants.Manager, reg *registry.Registry, mcpOAuth *oauth.Config,
 	accessConfig *mcpserver.AccessConfig, accessVerifier mcpserver.AccessAssertionVerifier,
 	db *storage.DB, schema string,
-	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, hrZones health.HRZones, apnsSender *apnspush.Sender) {
+	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, hrZones health.HRZones, apnsConfig *apnspush.TransportConfig) {
 
-	apnsTransport := configuredAPNSTransport(apnsSender)
+	apnsTransport := apnsConfig.Sender()
 	var morningSendMu, checkinSendMu sync.Mutex
 	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults, apnsTransport)
 	energyV2 := storage.NewEnergyV2Orchestrator()
@@ -499,7 +503,7 @@ func runSingleTenant(ctx context.Context, addr, baseURL string, trustFwdAuth boo
 	legacyUI := ui.New(mgr, reg, trustFwdAuth)
 	legacyUI.SetTrustedForwardAuthNetworkList(trustedFwdAuthNets)
 	legacyUI.ConfigureWebhook(notify.NewTelegramWebhookRegistrar(), baseURL)
-	legacyUI.ConfigureAPNs(apnsSender)
+	legacyUI.ConfigureAPNsTransport(apnsConfig)
 	legacyUI.Register(mux)
 	mcpserver.RegisterAccess(mux, mgr, accessConfig, accessVerifier)
 	if err := mcpserver.Register(mux, mgr, mcpOAuth); err != nil {
@@ -608,7 +612,7 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler, drain fun
 // link back to the tenant's /settings page.
 func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Registry, db *storage.DB, schema string,
 	notifyDefaults storage.NotifyConfig, aiDefaults storage.AIConfig, baseURL string, todayDerived *storage.TodayDerivedStateCoordinator,
-	startupBackfills *startupBackfillQueue, apnsSender *apnspush.Sender) {
+	startupBackfills *startupBackfillQueue, apnsConfig *apnspush.TransportConfig) {
 	refreshDatesFn := makeTodayDerivedStateRefresh(ctx, db, schema, notifyDefaults, todayDerived, func() storage.AIConfig {
 		// Resolve installation defaults when the queued refresh actually runs.
 		return db.GetAIConfig(mgr.AIDefaultsFor(ctx, schema))
@@ -617,7 +621,7 @@ func startTenant(ctx context.Context, mgr *tenants.Manager, reg *registry.Regist
 
 	enqueueStartupCacheRefresh(startupBackfills, db, schema, notifyDefaults, refreshDatesFn, todayDerived)
 
-	apnsTransport := configuredAPNSTransport(apnsSender)
+	apnsTransport := apnsConfig.Sender()
 	var morningSendMu, checkinSendMu sync.Mutex
 	maybeFireMorningReport := makeMorningTrigger(ctx, db, &morningSendMu, mgr, reg, schema, notifyDefaults, apnsTransport)
 

@@ -1,0 +1,37 @@
+ARG BUILD_REVISION=unknown
+ARG IMAGE_VERSION=dev
+
+FROM golang:1.27.3-alpine3.24@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /app/apns_relay ./cmd/apns_relay
+
+FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+
+ARG BUILD_REVISION
+ARG IMAGE_VERSION
+
+LABEL org.opencontainers.image.title="Health Sync APNs Relay" \
+      org.opencontainers.image.description="Multi-app App Attest verified APNs relay service for self-hosted Health servers" \
+      org.opencontainers.image.source="https://github.com/Dzarlax-AI/health_dashboard" \
+      org.opencontainers.image.revision="${BUILD_REVISION}" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      io.health-dashboard.image-role="apns-relay"
+
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S relay \
+    && adduser -S -G relay -h /app relay
+
+WORKDIR /app
+COPY --from=builder --chown=relay:relay /app/apns_relay ./
+
+USER relay
+
+EXPOSE 8081
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD wget -q -O - http://127.0.0.1:8081/healthz >/dev/null || exit 1
+
+CMD ["/app/apns_relay"]

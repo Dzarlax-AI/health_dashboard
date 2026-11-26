@@ -21,6 +21,9 @@ const (
 	PushEnvProduction = "production"
 	PushEnvSandbox    = "sandbox"
 
+	PushTransportDirect = "direct"
+	PushTransportRelay  = "relay"
+
 	PushDeliveryStatePending   = "pending"
 	PushDeliveryStateSending   = "sending"
 	PushDeliveryStateRetryWait = "retry_wait"
@@ -59,6 +62,9 @@ CREATE TABLE IF NOT EXISTS push_devices (
 	bundle_id              TEXT NOT NULL,
 	locale                 TEXT NOT NULL,
 	inbox_contract_version SMALLINT NOT NULL DEFAULT 1 CHECK (inbox_contract_version >= 1),
+	transport_mode         TEXT NOT NULL DEFAULT 'direct' CHECK (transport_mode IN ('direct','relay')),
+	relay_grant_id         UUID,
+	relay_grant_secret     TEXT NOT NULL DEFAULT '',
 	registration_version   BIGINT NOT NULL DEFAULT 1,
 	enabled                BOOLEAN NOT NULL DEFAULT TRUE,
 	invalidated_at         TIMESTAMPTZ,
@@ -68,6 +74,9 @@ CREATE TABLE IF NOT EXISTS push_devices (
 	last_seen_at           TIMESTAMPTZ NOT NULL
 );
 ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS inbox_contract_version SMALLINT NOT NULL DEFAULT 1;
+ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS transport_mode TEXT NOT NULL DEFAULT 'direct';
+ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS relay_grant_id UUID;
+ALTER TABLE push_devices ADD COLUMN IF NOT EXISTS relay_grant_secret TEXT NOT NULL DEFAULT '';
 DO $$
 BEGIN
 	IF NOT EXISTS (
@@ -75,6 +84,12 @@ BEGIN
 		 WHERE n.nspname = current_schema() AND t.relname = 'push_devices' AND c.conname = 'chk_push_devices_inbox_contract_version'
 	) THEN
 		ALTER TABLE push_devices ADD CONSTRAINT chk_push_devices_inbox_contract_version CHECK (inbox_contract_version >= 1);
+	END IF;
+	IF NOT EXISTS (
+		SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+		 WHERE n.nspname = current_schema() AND t.relname = 'push_devices' AND c.conname = 'chk_push_devices_transport_mode'
+	) THEN
+		ALTER TABLE push_devices ADD CONSTRAINT chk_push_devices_transport_mode CHECK (transport_mode IN ('direct','relay'));
 	END IF;
 END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_push_devices_active_token
@@ -228,10 +243,20 @@ func PushTokenHash(token string) []byte {
 	return sum[:]
 }
 
+func PushRelayTokenHash(grantID uuid.UUID, secret string) []byte {
+	secSum := sha256.Sum256([]byte(secret))
+	sum := sha256.Sum256([]byte("relay:" + grantID.String() + ":" + hex.EncodeToString(secSum[:])))
+	return sum[:]
+}
+
 type UpsertPushDeviceInput struct {
 	RegistrationAttemptID uuid.UUID
 	DeviceID              uuid.UUID
+	TransportMode         string
+	BindingID             uuid.UUID
 	APNsToken             string
+	RelayGrantID          *uuid.UUID
+	RelayGrantSecret      string
 	APNsEnv               string
 	BundleID              string
 	Locale                string
@@ -241,7 +266,10 @@ type UpsertPushDeviceInput struct {
 type PushDevice struct {
 	DeviceID             uuid.UUID
 	BindingID            uuid.UUID
+	TransportMode        string
 	APNsToken            string
+	RelayGrantID         *uuid.UUID
+	RelayGrantSecret     string
 	TokenHash            []byte
 	APNsEnv              string
 	BundleID             string
@@ -260,13 +288,39 @@ type PushDevice struct {
 // current tenant schema. Active token uniqueness within the tenant is enforced
 // atomically by deactivating any other device holding the same (token_hash, apns_env)
 // before upserting the target device_id. Re-enabling a previously disabled or
-// invalidated device issues a fresh binding_id and bumps registration_version.
+// invalidated device issues a fresh binding_id (direct) or uses the client's
+// grant-bound binding_id (relay) and bumps registration_version.
 func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (PushDevice, error) {
 	if in.DeviceID == uuid.Nil {
 		return PushDevice{}, errors.New("invalid device_id")
 	}
-	if !ValidAPNsToken(in.APNsToken) {
-		return PushDevice{}, errors.New("invalid apns_token")
+	if in.TransportMode == "" {
+		in.TransportMode = PushTransportDirect
+	}
+	if in.TransportMode != PushTransportDirect && in.TransportMode != PushTransportRelay {
+		return PushDevice{}, errors.New("invalid transport_mode")
+	}
+	var tokenHash []byte
+	if in.TransportMode == PushTransportDirect {
+		if !ValidAPNsToken(in.APNsToken) {
+			return PushDevice{}, errors.New("invalid apns_token")
+		}
+		in.RelayGrantID = nil
+		in.RelayGrantSecret = ""
+		tokenHash = PushTokenHash(in.APNsToken)
+	} else {
+		in.RelayGrantSecret = strings.TrimSpace(in.RelayGrantSecret)
+		if in.BindingID == uuid.Nil {
+			return PushDevice{}, errors.New("invalid binding_id")
+		}
+		if in.RelayGrantID == nil || *in.RelayGrantID == uuid.Nil {
+			return PushDevice{}, errors.New("invalid relay_grant_id")
+		}
+		if len(in.RelayGrantSecret) < 16 || len(in.RelayGrantSecret) > 512 {
+			return PushDevice{}, errors.New("invalid relay_grant_secret")
+		}
+		in.APNsToken = ""
+		tokenHash = PushRelayTokenHash(*in.RelayGrantID, in.RelayGrantSecret)
 	}
 	if !ValidAPNsEnv(in.APNsEnv) {
 		return PushDevice{}, errors.New("invalid apns_env")
@@ -280,7 +334,6 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 	if in.InboxContractVersion < InboxContractV1 {
 		in.InboxContractVersion = InboxContractV1
 	}
-	tokenHash := PushTokenHash(in.APNsToken)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -303,6 +356,17 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 		}
 	}
 
+	if in.TransportMode == PushTransportRelay {
+		var owner uuid.UUID
+		err = tx.QueryRow(ctx, `SELECT device_id FROM push_devices WHERE binding_id = $1`, in.BindingID).Scan(&owner)
+		if err == nil && owner != in.DeviceID {
+			return PushDevice{}, ErrPushRegistrationAttemptConflict
+		}
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return PushDevice{}, err
+		}
+	}
+
 	// Atomically deactivate any other device_id holding this active token in this tenant.
 	if _, err = tx.Exec(ctx, `
 		UPDATE push_devices
@@ -319,6 +383,7 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 	}
 
 	var existingBinding uuid.UUID
+	var existingTransport string
 	var existingHash []byte
 	var existingEnv string
 	var existingContractVersion int
@@ -326,68 +391,89 @@ func (s *DB) UpsertPushDevice(ctx context.Context, in UpsertPushDeviceInput) (Pu
 	var existingEnabled bool
 	var existingInvalidated *time.Time
 	err = tx.QueryRow(ctx, `
-		SELECT binding_id, token_hash, apns_env, inbox_contract_version, registration_version, enabled, invalidated_at
+		SELECT binding_id, transport_mode, token_hash, apns_env, inbox_contract_version, registration_version, enabled, invalidated_at
 		  FROM push_devices
 		 WHERE device_id = $1
 		   FOR UPDATE`, in.DeviceID,
-	).Scan(&existingBinding, &existingHash, &existingEnv, &existingContractVersion, &existingVersion, &existingEnabled, &existingInvalidated)
+	).Scan(&existingBinding, &existingTransport, &existingHash, &existingEnv, &existingContractVersion, &existingVersion, &existingEnabled, &existingInvalidated)
 
 	var out PushDevice
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		bindingID := uuid.New()
+		if in.TransportMode == PushTransportRelay {
+			bindingID = in.BindingID
+		}
 		err = tx.QueryRow(ctx, `
 			INSERT INTO push_devices (
-				device_id, binding_id, apns_token, token_hash, apns_env, bundle_id, locale,
+				device_id, binding_id, transport_mode, apns_token, relay_grant_id, relay_grant_secret,
+				token_hash, apns_env, bundle_id, locale,
 				inbox_contract_version, registration_version, enabled, invalidated_at, invalid_reason,
 				created_at, updated_at, last_seen_at
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7,
-				$8, 1, TRUE, NULL, '',
+				$1, $2, $3, $4, $5, $6,
+				$7, $8, $9, $10,
+				$11, 1, TRUE, NULL, '',
 				clock_timestamp(), clock_timestamp(), clock_timestamp()
 			)
-			RETURNING device_id, binding_id, apns_token, token_hash, apns_env, bundle_id, locale,
+			RETURNING device_id, binding_id, transport_mode, apns_token, relay_grant_id, relay_grant_secret,
+			          token_hash, apns_env, bundle_id, locale,
 			          inbox_contract_version, registration_version, enabled, invalidated_at, invalid_reason,
 			          created_at, updated_at, last_seen_at`,
-			in.DeviceID, bindingID, in.APNsToken, tokenHash, in.APNsEnv, in.BundleID, in.Locale, in.InboxContractVersion,
+			in.DeviceID, bindingID, in.TransportMode, in.APNsToken, in.RelayGrantID, in.RelayGrantSecret,
+			tokenHash, in.APNsEnv, in.BundleID, in.Locale, in.InboxContractVersion,
 		).Scan(
-			&out.DeviceID, &out.BindingID, &out.APNsToken, &out.TokenHash, &out.APNsEnv, &out.BundleID, &out.Locale,
+			&out.DeviceID, &out.BindingID, &out.TransportMode, &out.APNsToken, &out.RelayGrantID, &out.RelayGrantSecret,
+			&out.TokenHash, &out.APNsEnv, &out.BundleID, &out.Locale,
 			&out.InboxContractVersion, &out.RegistrationVersion, &out.Enabled, &out.InvalidatedAt, &out.InvalidReason,
 			&out.CreatedAt, &out.UpdatedAt, &out.LastSeenAt,
 		)
 	case err == nil:
 		bindingID := existingBinding
 		version := existingVersion
-		tokenChanged := !bytesEqual(existingHash, tokenHash) || existingEnv != in.APNsEnv
+		tokenChanged := !bytesEqual(existingHash, tokenHash) || existingEnv != in.APNsEnv || existingTransport != in.TransportMode
 		contractChanged := existingContractVersion != in.InboxContractVersion
-		if !existingEnabled || existingInvalidated != nil {
-			bindingID = uuid.New()
-			version++
-		} else if tokenChanged || contractChanged || in.RegistrationAttemptID != uuid.Nil {
-			version++
+		if in.TransportMode == PushTransportRelay {
+			bindingID = in.BindingID
+			if !existingEnabled || existingInvalidated != nil || existingBinding != bindingID || tokenChanged || contractChanged || in.RegistrationAttemptID != uuid.Nil {
+				version++
+			}
+		} else {
+			if !existingEnabled || existingInvalidated != nil || existingTransport != PushTransportDirect {
+				bindingID = uuid.New()
+				version++
+			} else if tokenChanged || contractChanged || in.RegistrationAttemptID != uuid.Nil {
+				version++
+			}
 		}
 		err = tx.QueryRow(ctx, `
 			UPDATE push_devices
 			   SET binding_id = $2,
-			       apns_token = $3,
-			       token_hash = $4,
-			       apns_env = $5,
-			       bundle_id = $6,
-			       locale = $7,
-			       inbox_contract_version = $8,
-			       registration_version = $9,
+			       transport_mode = $3,
+			       apns_token = $4,
+			       relay_grant_id = $5,
+			       relay_grant_secret = $6,
+			       token_hash = $7,
+			       apns_env = $8,
+			       bundle_id = $9,
+			       locale = $10,
+			       inbox_contract_version = $11,
+			       registration_version = $12,
 			       enabled = TRUE,
 			       invalidated_at = NULL,
 			       invalid_reason = '',
 			       updated_at = clock_timestamp(),
 			       last_seen_at = clock_timestamp()
 			 WHERE device_id = $1
-			 RETURNING device_id, binding_id, apns_token, token_hash, apns_env, bundle_id, locale,
+			 RETURNING device_id, binding_id, transport_mode, apns_token, relay_grant_id, relay_grant_secret,
+			           token_hash, apns_env, bundle_id, locale,
 			           inbox_contract_version, registration_version, enabled, invalidated_at, invalid_reason,
 			           created_at, updated_at, last_seen_at`,
-			in.DeviceID, bindingID, in.APNsToken, tokenHash, in.APNsEnv, in.BundleID, in.Locale, in.InboxContractVersion, version,
+			in.DeviceID, bindingID, in.TransportMode, in.APNsToken, in.RelayGrantID, in.RelayGrantSecret,
+			tokenHash, in.APNsEnv, in.BundleID, in.Locale, in.InboxContractVersion, version,
 		).Scan(
-			&out.DeviceID, &out.BindingID, &out.APNsToken, &out.TokenHash, &out.APNsEnv, &out.BundleID, &out.Locale,
+			&out.DeviceID, &out.BindingID, &out.TransportMode, &out.APNsToken, &out.RelayGrantID, &out.RelayGrantSecret,
+			&out.TokenHash, &out.APNsEnv, &out.BundleID, &out.Locale,
 			&out.InboxContractVersion, &out.RegistrationVersion, &out.Enabled, &out.InvalidatedAt, &out.InvalidReason,
 			&out.CreatedAt, &out.UpdatedAt, &out.LastSeenAt,
 		)
@@ -676,7 +762,10 @@ type ClaimedPushDelivery struct {
 	ExpiresAt           time.Time
 
 	// Current device state loaded alongside claim for freshness validation.
+	DeviceTransportMode        string
 	DeviceAPNsToken            string
+	DeviceRelayGrantID         *uuid.UUID
+	DeviceRelayGrantSecret     string
 	DeviceEnabled              bool
 	DeviceInvalidatedAt        *time.Time
 	DeviceBindingID            uuid.UUID
@@ -741,7 +830,8 @@ func (s *DB) ClaimNextPushDelivery(ctx context.Context) (*ClaimedPushDelivery, e
 
 	if err = tx.QueryRow(ctx, `
 		SELECT i.local_date,
-		       dev.apns_token, dev.enabled, dev.invalidated_at, dev.binding_id,
+		       dev.transport_mode, dev.apns_token, dev.relay_grant_id, dev.relay_grant_secret,
+		       dev.enabled, dev.invalidated_at, dev.binding_id,
 		       dev.registration_version, dev.token_hash, dev.inbox_contract_version,
 		       COALESCE(sc.status, ''), sc.expires_at,
 		       COALESCE(df.response, ''),
@@ -764,7 +854,8 @@ func (s *DB) ClaimNextPushDelivery(ctx context.Context) (*ClaimedPushDelivery, e
 		d.InboxItemID, d.DeviceID,
 	).Scan(
 		&d.LocalDate,
-		&d.DeviceAPNsToken, &d.DeviceEnabled, &d.DeviceInvalidatedAt, &d.DeviceBindingID,
+		&d.DeviceTransportMode, &d.DeviceAPNsToken, &d.DeviceRelayGrantID, &d.DeviceRelayGrantSecret,
+		&d.DeviceEnabled, &d.DeviceInvalidatedAt, &d.DeviceBindingID,
 		&d.DeviceRegistrationVersion, &d.DeviceTokenHash, &d.DeviceInboxContractVersion,
 		&d.CheckinStatus, &d.CheckinExpiresAt,
 		&d.WakeFeedbackResponse,
@@ -972,7 +1063,8 @@ func (s *DB) CompletePushDelivery(ctx context.Context, in CompletePushDeliveryIn
 // ListPushDevices returns devices registered in this tenant schema (for tests/admin).
 func (s *DB) ListPushDevices(ctx context.Context) ([]PushDevice, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT device_id, binding_id, apns_token, token_hash, apns_env, bundle_id, locale,
+		SELECT device_id, binding_id, transport_mode, apns_token, relay_grant_id, relay_grant_secret,
+		       token_hash, apns_env, bundle_id, locale,
 		       inbox_contract_version, registration_version, enabled, invalidated_at, invalid_reason,
 		       created_at, updated_at, last_seen_at
 		  FROM push_devices
@@ -985,7 +1077,8 @@ func (s *DB) ListPushDevices(ctx context.Context) ([]PushDevice, error) {
 	for rows.Next() {
 		var d PushDevice
 		if err := rows.Scan(
-			&d.DeviceID, &d.BindingID, &d.APNsToken, &d.TokenHash, &d.APNsEnv, &d.BundleID, &d.Locale,
+			&d.DeviceID, &d.BindingID, &d.TransportMode, &d.APNsToken, &d.RelayGrantID, &d.RelayGrantSecret,
+			&d.TokenHash, &d.APNsEnv, &d.BundleID, &d.Locale,
 			&d.InboxContractVersion, &d.RegistrationVersion, &d.Enabled, &d.InvalidatedAt, &d.InvalidReason,
 			&d.CreatedAt, &d.UpdatedAt, &d.LastSeenAt,
 		); err != nil {

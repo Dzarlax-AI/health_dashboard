@@ -777,13 +777,16 @@ export function SettingsPage() {
                     }
                   >
                     {tp(locale, "notifyChannelPush")}:{" "}
-                    {!notifPrefs.apns_push_enabled
-                      ? tp(locale, "notifyChannelDisabled")
-                      : notifPrefs.active_push_devices_count > 0
-                        ? tp(locale, "notifyPushDevices", {
-                            count: notifPrefs.active_push_devices_count,
-                          })
-                        : tp(locale, "notifyPushNoDevices")}
+                    {!notifPrefs.apns_push_configured ||
+                    notifPrefs.apns_transport_mode === "none"
+                      ? tp(locale, "notifyChannelNotConfigured")
+                      : !notifPrefs.apns_push_enabled
+                        ? tp(locale, "notifyChannelDisabled")
+                        : notifPrefs.active_push_devices_count > 0
+                          ? tp(locale, "notifyPushDevices", {
+                              count: notifPrefs.active_push_devices_count,
+                            })
+                          : tp(locale, "notifyPushNoDevices")}
                   </span>
                   <span
                     className={

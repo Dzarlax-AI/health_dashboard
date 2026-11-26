@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	clientapi "health-receiver/internal/api"
+	"health-receiver/internal/apnspush"
 	"health-receiver/internal/storage"
 )
 
@@ -22,9 +23,18 @@ func (h *Handler) buildNotificationPreferencesResponse(r *http.Request, db *stor
 	if err != nil {
 		activeDevices = 0
 	}
+	apnsConfigured := h.apnsTransport != nil
+	transportMode := h.apnsTransport.EffectiveMode()
+	relayURL := ""
+	if transportMode == apnspush.TransportModeRelay && h.apnsTransport != nil {
+		relayURL = h.apnsTransport.RelayURL
+	}
 	return clientapi.NotificationPreferencesResponse{
 		InboxEnabled:                 storage.IsInAppInboxEnabled(db),
-		APNSPushEnabled:              storage.IsAPNSPushEnabled(db),
+		APNSPushEnabled:              apnsConfigured && storage.IsAPNSPushEnabled(db),
+		APNsPushConfigured:           apnsConfigured,
+		APNsTransportMode:            transportMode,
+		APNsRelayURL:                 relayURL,
 		TelegramConfigured:           cfg.HasTelegramCredentials(),
 		TelegramNotificationsEnabled: !cfg.TelegramDisabled,
 		ActivePushDevicesCount:       activeDevices,
