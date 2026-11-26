@@ -30,6 +30,7 @@ var (
 	ErrKeyAlreadyRegistered = errors.New("attest key already registered")
 	ErrKeyNotFound          = errors.New("attest key not found or revoked")
 	ErrGrantConflict        = errors.New("grant conflict or cancelled")
+	ErrGrantTerminal        = errors.New("grant expired, revoked, or invalidated")
 	ErrGrantNotFound        = errors.New("grant not found")
 	ErrGrantLimitExceeded   = errors.New("grant limit exceeded")
 	ErrEnvNotAllowed        = errors.New("apns environment not allowed for attested key")
@@ -469,7 +470,7 @@ func (s *Store) RefreshGrant(ctx context.Context, ac AssertionContext, in Refres
 			return err
 		}
 		if revokedAt != nil || invalidatedAt != nil || !expiresAt.After(now) {
-			return ErrGrantConflict
+			return ErrGrantTerminal
 		}
 
 		newEnc := existingTokenEnc
@@ -514,10 +515,17 @@ func (s *Store) RefreshGrant(ctx context.Context, ac AssertionContext, in Refres
 	return out, err
 }
 
+type UpdateDeviceTokenResult struct {
+	Updated        int
+	ActiveGrantIDs []string
+}
+
 // UpdateDeviceToken rotates the APNs device token across all active grants for
-// (key_id, app_id, apns_env), bumping token_version and token_updated_at.
-func (s *Store) UpdateDeviceToken(ctx context.Context, ac AssertionContext, apnsToken, apnsEnv string) (int, error) {
-	var updated int
+// (key_id, app_id, apns_env), bumping token_version and token_updated_at, and
+// returns the IDs of all active grants so clients can detect terminal grants
+// even when updated == 0.
+func (s *Store) UpdateDeviceToken(ctx context.Context, ac AssertionContext, apnsToken, apnsEnv string) (UpdateDeviceTokenResult, error) {
+	out := UpdateDeviceTokenResult{ActiveGrantIDs: []string{}}
 	err := s.withVerifiedAssertion(ctx, ac, func(tx pgx.Tx, key attestedKeyRow, now time.Time) error {
 		if !ac.App.AllowsEnvForAttest(key.AttestEnv, apnsEnv) {
 			return ErrEnvNotAllowed
@@ -556,6 +564,7 @@ func (s *Store) UpdateDeviceToken(ctx context.Context, ac AssertionContext, apns
 		}
 		newHash := sha256.Sum256([]byte(apnsToken))
 		for _, t := range targets {
+			out.ActiveGrantIDs = append(out.ActiveGrantIDs, t.grantID.String())
 			if bytes.Equal(t.tokenHash, newHash[:]) {
 				continue
 			}
@@ -575,11 +584,11 @@ func (s *Store) UpdateDeviceToken(ctx context.Context, ac AssertionContext, apns
 			); err != nil {
 				return err
 			}
-			updated++
+			out.Updated++
 		}
 		return nil
 	})
-	return updated, err
+	return out, err
 }
 
 func (s *Store) RevokeGrant(ctx context.Context, ac AssertionContext, grantID uuid.UUID) (bool, error) {

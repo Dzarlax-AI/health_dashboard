@@ -538,6 +538,46 @@ func TestRelayConditionalInvalidationAndTokenRotation(t *testing.T) {
 	if afterRec.Code != http.StatusGone || h.healthSender.callCount() != before {
 		t.Fatalf("expected 410 without APNs call after invalidation, got %d calls=%d", afterRec.Code, h.healthSender.callCount()-before)
 	}
+
+	// Verify invalidated grant returns 410 Gone on refresh and is absent from PUT /v1/attest/token active_grant_ids.
+	var createdGrant struct {
+		GrantID uuid.UUID `json:"grant_id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &createdGrant)
+	refRec := h.signedRequest(http.MethodPut, "/v1/grants/"+createdGrant.GrantID.String()+"/refresh", AppIDHealthSync, DefaultHealthAppleAppID, dev, OpGrantRefresh, func(ch ChallengeResponse) any {
+		return RefreshGrantRequest{
+			AppID:       AppIDHealthSync,
+			Op:          OpGrantRefresh,
+			ResourceID:  createdGrant.GrantID.String(),
+			ChallengeID: ch.ChallengeID.String(),
+			Nonce:       ch.Nonce,
+		}
+	})
+	if refRec.Code != http.StatusGone {
+		t.Fatalf("expected 410 Gone refreshing invalidated grant, got %d %s", refRec.Code, refRec.Body.String())
+	}
+	rotAfterInv := h.signedRequest(http.MethodPut, "/v1/attest/token", AppIDHealthSync, DefaultHealthAppleAppID, dev, OpDeviceUpdateToken, func(ch ChallengeResponse) any {
+		return UpdateDeviceTokenRequest{
+			AppID:       AppIDHealthSync,
+			Op:          OpDeviceUpdateToken,
+			ResourceID:  dev.keyID,
+			ChallengeID: ch.ChallengeID.String(),
+			Nonce:       ch.Nonce,
+			APNsToken:   strings.Repeat("ff", 32),
+			APNsEnv:     storage.PushEnvProduction,
+		}
+	})
+	if rotAfterInv.Code != http.StatusOK {
+		t.Fatalf("rotate after invalidation status=%d %s", rotAfterInv.Code, rotAfterInv.Body.String())
+	}
+	var rotResp struct {
+		Updated        int      `json:"updated"`
+		ActiveGrantIDs []string `json:"active_grant_ids"`
+	}
+	_ = json.Unmarshal(rotAfterInv.Body.Bytes(), &rotResp)
+	if rotResp.Updated != 0 || len(rotResp.ActiveGrantIDs) != 0 {
+		t.Fatalf("expected updated=0 and empty active_grant_ids after invalidation, got %+v", rotResp)
+	}
 }
 
 func TestRelayAmbiguousVsRetryableOutcomes(t *testing.T) {

@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -27,6 +29,30 @@ func TestSchemaContractManifestIsDeterministic(t *testing.T) {
 	}
 	if SchemaContractVersion != 24 {
 		t.Fatalf("schema contract version = %d, want 24", SchemaContractVersion)
+	}
+}
+
+func TestSchemaContractMatchesDBTWorkerPin(t *testing.T) {
+	workerPath := filepath.Join("..", "..", "experiments", "dbt_metrics", "scripts", "tenant_aggregate_worker.py")
+	raw, err := os.ReadFile(workerPath)
+	if err != nil {
+		t.Fatalf("read dbt worker %s: %v", workerPath, err)
+	}
+	content := string(raw)
+	verMatch := regexp.MustCompile(`(?m)^SCHEMA_VERSION\s*=\s*(\d+)\s*$`).FindStringSubmatch(content)
+	if len(verMatch) != 2 {
+		t.Fatalf("SCHEMA_VERSION pin not found in %s", workerPath)
+	}
+	workerVer, err := strconv.Atoi(verMatch[1])
+	if err != nil || workerVer != SchemaContractVersion {
+		t.Fatalf("dbt worker SCHEMA_VERSION = %q, want %d", verMatch[1], SchemaContractVersion)
+	}
+	sumMatch := regexp.MustCompile(`(?m)^SCHEMA_CHECKSUM\s*=\s*"([a-f0-9]{64})"\s*$`).FindStringSubmatch(content)
+	if len(sumMatch) != 2 {
+		t.Fatalf("SCHEMA_CHECKSUM pin not found in %s", workerPath)
+	}
+	if want := SchemaContractChecksum(); sumMatch[1] != want {
+		t.Fatalf("dbt worker SCHEMA_CHECKSUM = %q, want %q", sumMatch[1], want)
 	}
 }
 

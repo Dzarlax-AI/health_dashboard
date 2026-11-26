@@ -411,12 +411,15 @@ func (s *Server) handleUpdateDeviceToken(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusBadRequest, "invalid apns_env")
 		return
 	}
-	updated, err := s.store.UpdateDeviceToken(r.Context(), ac, tok, env)
+	res, err := s.store.UpdateDeviceToken(r.Context(), ac, tok, env)
 	if err != nil {
 		s.writeStoreAssertionError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"updated":          res.Updated,
+		"active_grant_ids": res.ActiveGrantIDs,
+	})
 }
 
 type RevokeGrantRequest struct {
@@ -877,6 +880,8 @@ func (s *Server) writeStoreAssertionError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusUnauthorized, "assertion verification failed")
 	case errors.Is(err, ErrEnvNotAllowed):
 		writeJSONError(w, http.StatusForbidden, "apns environment not allowed")
+	case errors.Is(err, ErrGrantTerminal):
+		writeJSONError(w, http.StatusGone, "grant expired, revoked, or invalidated")
 	case errors.Is(err, ErrGrantConflict):
 		writeJSONError(w, http.StatusConflict, "grant conflict")
 	case errors.Is(err, ErrGrantNotFound):
