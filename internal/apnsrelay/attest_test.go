@@ -193,8 +193,9 @@ func (dev *testDeviceKey) buildAssertion(t *testing.T, appleAppID string, client
 	h.Write(authData)
 	h.Write(clientDataHash)
 	nonce := h.Sum(nil)
+	digest := sha256.Sum256(nonce)
 
-	sig, err := ecdsa.SignASN1(rand.Reader, dev.priv, nonce)
+	sig, err := ecdsa.SignASN1(rand.Reader, dev.priv, digest[:])
 	if err != nil {
 		t.Fatalf("sign assertion: %v", err)
 	}
@@ -343,5 +344,36 @@ func TestAbsentSandboxCredentialsPreserveSenderFallback(t *testing.T) {
 	app := AppConfig{AllowSandbox: true, ProductionSender: production, SandboxSender: sandbox}
 	if got := app.SenderForEnv("sandbox"); got != production {
 		t.Fatal("sandbox sender did not fall back to the configured sender")
+	}
+}
+
+func TestVerifyAssertionFromPhysicalIOSDevice(t *testing.T) {
+	// Captured on iOS 14.4 by Vincent Haupert (Apache-2.0).
+	// https://github.com/veehaitch/devicecheck-appattest/blob/cb26211f63c1e2e7949deafe2efdf352daca27fa/src/test/resources/ios-14.4.yaml
+	const appID = "6MURL8TA57.de.vincent-haupert.apple-appattest-poc"
+	const expectedCounter = 1
+	decode := func(s string) []byte {
+		t.Helper()
+		data, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	key := decode("MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEiMA0oZCqfbxaBhUBxlQoA5QlghmLPxzFRnPKO5rSC0FSgmelT1/boEafr7RrtpkKOWvwT5SknUMgyBx6skCjmA==")
+	clientHash := decode("i+ZcylFa0JfJU5Z9GNY12G3XihQu09B3UmvtEca+xns=")
+	assertion := decode("omlzaWduYXR1cmVYRjBEAiBJ6BT/QR689UKy84YyN3RDydYD9KVQ2BTRK+x1i8ezqAIgGM7BsZbSuF6TjmK6xtOFekyVyjf8akGvp5qFRGm9LTxxYXV0aGVudGljYXRvckRhdGFYJUVlEup+JpR2q5Pht5cWhVkv9z+JSsDsL9VICKCL+2yPQAAAAAE=")
+	verifier := &AppAttestVerifier{}
+
+	count, err := verifier.VerifyAssertion(appID, key, 0, clientHash, assertion)
+	if err != nil || count != expectedCounter {
+		t.Fatalf("physical-device assertion = (%d, %v), want (%d, nil)", count, err, expectedCounter)
+	}
+	if _, err := verifier.VerifyAssertion(appID, key, count, clientHash, assertion); err == nil {
+		t.Fatal("accepted a repeated assertion counter")
+	}
+	clientHash[0] ^= 1
+	if _, err := verifier.VerifyAssertion(appID, key, 0, clientHash, assertion); err == nil {
+		t.Fatal("accepted an assertion for a different client data hash")
 	}
 }
