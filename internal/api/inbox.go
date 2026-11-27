@@ -107,9 +107,12 @@ type InboxReadAllResponse struct {
 }
 
 type NotificationPreferencesResponse struct {
-	InboxEnabled                 bool `json:"inbox_enabled"`
-	APNSPushEnabled              bool `json:"apns_push_enabled"`
-	TelegramConfigured           bool `json:"telegram_configured"`
+	InboxEnabled                 bool   `json:"inbox_enabled"`
+	APNSPushEnabled              bool   `json:"apns_push_enabled"`
+	APNsPushConfigured           bool   `json:"apns_push_configured"`
+	APNsTransportMode            string `json:"apns_transport_mode" jsonschema:"enum=direct,enum=relay,enum=none"`
+	APNsRelayURL                 string `json:"apns_relay_url,omitempty"`
+	TelegramConfigured           bool   `json:"telegram_configured"`
 	TelegramNotificationsEnabled bool `json:"telegram_notifications_enabled"`
 	ActivePushDevicesCount       int  `json:"active_push_devices_count"`
 	MorningWeekdayHour           int  `json:"morning_weekday_hour"`

@@ -29,6 +29,7 @@ import (
 const DefaultTopic = "com.dzarlax.health-sync"
 
 var ErrCredential = errors.New("invalid APNs credential")
+var ErrPreSend = errors.New("APNs request not dispatched")
 
 type Credential struct {
 	KeyID      string `json:"key_id"`
@@ -225,11 +226,11 @@ func (s *Sender) Send(ctx context.Context, environment, token, requestID, pushTy
 	}
 	client, jwt, err := s.transportAndJWT(now)
 	if err != nil {
-		return out, err
+		return out, fmt.Errorf("%w: %w", ErrPreSend, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/3/device/"+token, bytes.NewReader(payload))
 	if err != nil {
-		return out, errors.New("APNs request unavailable")
+		return out, ErrPreSend
 	}
 	req.Header.Set("authorization", "bearer "+jwt)
 	req.Header.Set("apns-topic", s.EffectiveTopic())

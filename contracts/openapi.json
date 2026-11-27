@@ -3845,8 +3845,22 @@
           "active_push_devices_count": {
             "type": "integer"
           },
+          "apns_push_configured": {
+            "type": "boolean"
+          },
           "apns_push_enabled": {
             "type": "boolean"
+          },
+          "apns_relay_url": {
+            "type": "string"
+          },
+          "apns_transport_mode": {
+            "enum": [
+              "direct",
+              "relay",
+              "none"
+            ],
+            "type": "string"
           },
           "daytime_enabled": {
             "type": "boolean"
@@ -3897,6 +3911,8 @@
         "required": [
           "inbox_enabled",
           "apns_push_enabled",
+          "apns_push_configured",
+          "apns_transport_mode",
           "telegram_configured",
           "telegram_notifications_enabled",
           "active_push_devices_count",
@@ -4240,6 +4256,9 @@
           "apns_token": {
             "type": "string"
           },
+          "binding_id": {
+            "type": "string"
+          },
           "bundle_id": {
             "type": "string"
           },
@@ -4259,11 +4278,23 @@
           },
           "registration_attempt_id": {
             "type": "string"
+          },
+          "relay_grant_id": {
+            "type": "string"
+          },
+          "relay_grant_secret": {
+            "type": "string"
+          },
+          "transport": {
+            "enum": [
+              "direct",
+              "relay"
+            ],
+            "type": "string"
           }
         },
         "required": [
           "device_id",
-          "apns_token",
           "apns_env",
           "bundle_id",
           "locale"

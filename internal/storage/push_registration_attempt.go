@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"strconv"
 	"strings"
@@ -47,6 +48,23 @@ func pushRegistrationRequestHash(in UpsertPushDeviceInput) [sha256.Size]byte {
 	contractVer := in.InboxContractVersion
 	if contractVer < InboxContractV1 {
 		contractVer = InboxContractV1
+	}
+	if in.TransportMode == PushTransportRelay {
+		grantID := ""
+		if in.RelayGrantID != nil {
+			grantID = in.RelayGrantID.String()
+		}
+		secHash := sha256.Sum256([]byte(in.RelayGrantSecret))
+		return sha256.Sum256([]byte(strings.Join([]string{
+			PushTransportRelay,
+			in.BindingID.String(),
+			grantID,
+			hex.EncodeToString(secHash[:]),
+			in.APNsEnv,
+			in.BundleID,
+			in.Locale,
+			strconv.Itoa(contractVer),
+		}, "\x00")))
 	}
 	if contractVer == InboxContractV1 {
 		// Keep the exact v22 4-field hash for contract v1 so TestFlight 33

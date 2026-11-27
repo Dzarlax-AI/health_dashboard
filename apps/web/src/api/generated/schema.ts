@@ -1954,7 +1954,11 @@ export interface components {
         };
         NotificationPreferencesResponse: {
             active_push_devices_count: number;
+            apns_push_configured: boolean;
             apns_push_enabled: boolean;
+            apns_relay_url?: string;
+            /** @enum {string} */
+            apns_transport_mode: "direct" | "relay" | "none";
             daytime_enabled: boolean;
             daytime_end_hour: number;
             daytime_start_hour: number;
@@ -2039,13 +2043,18 @@ export interface components {
         PushDeviceRegisterRequest: {
             /** @enum {string} */
             apns_env: "production" | "sandbox";
-            apns_token: string;
+            apns_token?: string;
+            binding_id?: string;
             bundle_id: string;
             device_id: string;
             inbox_contract_version?: number;
             /** @enum {string} */
             locale: "en" | "ru" | "sr";
             registration_attempt_id?: string;
+            relay_grant_id?: string;
+            relay_grant_secret?: string;
+            /** @enum {string} */
+            transport?: "direct" | "relay";
         };
         PushDeviceRegisterResponse: {
             /** @enum {string} */

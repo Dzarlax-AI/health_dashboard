@@ -17,16 +17,21 @@ import (
 // ConfigureAPNs enables Direct APNs device registration endpoints using the
 // process-level APNs sender and expected bundle topic.
 func (h *Handler) ConfigureAPNs(sender *apnspush.Sender) {
-	h.apnsSender = sender
+	h.apnsTransport = apnspush.DirectTransportConfig(sender)
+}
+
+// ConfigureAPNsTransport configures either Direct APNs or APNs Relay mode.
+func (h *Handler) ConfigureAPNsTransport(cfg *apnspush.TransportConfig) {
+	h.apnsTransport = cfg
 }
 
 func (h *Handler) pushDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	db := h.tenantDB(r)
-	if h.apnsSender == nil || !storage.IsInAppInboxEnabled(db) || !storage.IsAPNSPushEnabled(db) {
+	if h.apnsTransport == nil || !storage.IsInAppInboxEnabled(db) || !storage.IsAPNSPushEnabled(db) {
 		http.NotFound(w, r)
 		return
 	}
-	const maxBodyBytes = 2048
+	const maxBodyBytes = 4096
 	var req clientapi.PushDeviceRegisterRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
@@ -43,25 +48,77 @@ func (h *Handler) pushDeviceRegister(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid device_id", http.StatusBadRequest)
 		return
 	}
+	transport := storage.PushTransportDirect
+	if req.Transport != nil && strings.TrimSpace(*req.Transport) != "" {
+		transport = strings.TrimSpace(*req.Transport)
+	}
+	if transport != h.apnsTransport.EffectiveMode() {
+		jsonError(w, "push transport mode mismatch", http.StatusBadRequest)
+		return
+	}
+
 	req.APNsToken = strings.TrimSpace(req.APNsToken)
 	req.APNsEnv = strings.TrimSpace(req.APNsEnv)
 	req.BundleID = strings.TrimSpace(req.BundleID)
 	req.Locale = strings.TrimSpace(req.Locale)
-	if !storage.ValidAPNsToken(req.APNsToken) {
-		jsonError(w, "invalid apns_token", http.StatusBadRequest)
-		return
-	}
 	if !storage.ValidAPNsEnv(req.APNsEnv) {
 		jsonError(w, "invalid apns_env", http.StatusBadRequest)
 		return
 	}
-	if req.BundleID != h.apnsSender.EffectiveTopic() {
+	if req.BundleID != h.apnsTransport.EffectiveTopic() {
 		jsonError(w, "invalid bundle_id", http.StatusBadRequest)
 		return
 	}
 	if !storage.ValidPushLocale(req.Locale) {
 		jsonError(w, "invalid locale", http.StatusBadRequest)
 		return
+	}
+
+	var bindingID uuid.UUID
+	var relayGrantID *uuid.UUID
+	var relayGrantSecret string
+	if transport == storage.PushTransportDirect {
+		if !storage.ValidAPNsToken(req.APNsToken) {
+			jsonError(w, "invalid apns_token", http.StatusBadRequest)
+			return
+		}
+		if req.RelayGrantID != nil || req.RelayGrantSecret != nil || req.BindingID != nil {
+			jsonError(w, "relay fields are not allowed in direct mode", http.StatusBadRequest)
+			return
+		}
+	} else {
+		if req.APNsToken != "" {
+			jsonError(w, "apns_token must be empty in relay mode", http.StatusBadRequest)
+			return
+		}
+		if req.BindingID == nil {
+			jsonError(w, "binding_id is required in relay mode", http.StatusBadRequest)
+			return
+		}
+		bindingID, err = uuid.Parse(strings.TrimSpace(*req.BindingID))
+		if err != nil || bindingID == uuid.Nil {
+			jsonError(w, "invalid binding_id", http.StatusBadRequest)
+			return
+		}
+		if req.RelayGrantID == nil {
+			jsonError(w, "relay_grant_id is required in relay mode", http.StatusBadRequest)
+			return
+		}
+		gid, parseErr := uuid.Parse(strings.TrimSpace(*req.RelayGrantID))
+		if parseErr != nil || gid == uuid.Nil {
+			jsonError(w, "invalid relay_grant_id", http.StatusBadRequest)
+			return
+		}
+		relayGrantID = &gid
+		if req.RelayGrantSecret == nil {
+			jsonError(w, "relay_grant_secret is required in relay mode", http.StatusBadRequest)
+			return
+		}
+		relayGrantSecret = strings.TrimSpace(*req.RelayGrantSecret)
+		if !storage.ValidRelayGrantSecret(relayGrantSecret) {
+			jsonError(w, "invalid relay_grant_secret", http.StatusBadRequest)
+			return
+		}
 	}
 
 	var attemptID uuid.UUID
@@ -83,7 +140,11 @@ func (h *Handler) pushDeviceRegister(w http.ResponseWriter, r *http.Request) {
 	dev, err := db.UpsertPushDevice(r.Context(), storage.UpsertPushDeviceInput{
 		RegistrationAttemptID: attemptID,
 		DeviceID:              deviceID,
+		TransportMode:         transport,
+		BindingID:             bindingID,
 		APNsToken:             req.APNsToken,
+		RelayGrantID:          relayGrantID,
+		RelayGrantSecret:      relayGrantSecret,
 		APNsEnv:               req.APNsEnv,
 		BundleID:              req.BundleID,
 		Locale:                req.Locale,

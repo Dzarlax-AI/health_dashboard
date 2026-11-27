@@ -318,18 +318,53 @@ func deliverClaimed(ctx context.Context, db *storage.DB, sender TransportSender,
 		}
 	}
 
-	payload, err := BuildPayloadForKind(d.Kind, d.Locale, d.InboxItemID, d.BindingID)
-	if err != nil {
-		_, _ = completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
-			DeliveryID:    d.ID,
-			LeaseToken:    d.LeaseToken,
-			DeliveryState: storage.PushDeliveryStateRejected,
-			Reason:        "invalid_payload",
-		})
-		return
+	transportMode := d.DeviceTransportMode
+	if transportMode == "" {
+		transportMode = storage.PushTransportDirect
 	}
 
-	// Record durable attempt strictly under active unexpired lease_token BEFORE calling APNs.
+	var relaySender RelayTransportSender
+	var directPayload []byte
+	if transportMode == storage.PushTransportRelay {
+		rs, ok := sender.(RelayTransportSender)
+		if !ok || d.DeviceRelayGrantSecret == "" {
+			if _, err := completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
+				DeliveryID:    d.ID,
+				LeaseToken:    d.LeaseToken,
+				DeliveryState: storage.PushDeliveryStateRejected,
+				Reason:        "transport_mode_mismatch",
+			}); err != nil {
+				log.Printf("apns: complete transport_mode_mismatch delivery=%s: %v", d.ID, err)
+			}
+			return
+		}
+		relaySender = rs
+	} else {
+		if _, isRelayOnly := sender.(*RelayClient); isRelayOnly {
+			if _, err := completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
+				DeliveryID:    d.ID,
+				LeaseToken:    d.LeaseToken,
+				DeliveryState: storage.PushDeliveryStateRejected,
+				Reason:        "transport_mode_mismatch",
+			}); err != nil {
+				log.Printf("apns: complete transport_mode_mismatch delivery=%s: %v", d.ID, err)
+			}
+			return
+		}
+		var err error
+		directPayload, err = BuildPayloadForKind(d.Kind, d.Locale, d.InboxItemID, d.BindingID)
+		if err != nil {
+			_, _ = completeWithBudget(ctx, db, storage.CompletePushDeliveryInput{
+				DeliveryID:    d.ID,
+				LeaseToken:    d.LeaseToken,
+				DeliveryState: storage.PushDeliveryStateRejected,
+				Reason:        "invalid_payload",
+			})
+			return
+		}
+	}
+
+	// Record durable attempt strictly under active unexpired lease_token BEFORE calling APNs/Relay.
 	attemptID, err := db.StartPushDeliveryAttempt(ctx, d.ID, d.LeaseToken)
 	if err != nil {
 		if errors.Is(err, storage.ErrPushDeliveryIneligible) {
@@ -345,12 +380,124 @@ func deliverClaimed(ctx context.Context, db *storage.DB, sender TransportSender,
 		return
 	}
 
-	res, sendErr := sender.Send(ctx, d.APNsEnv, d.DeviceAPNsToken, d.APNsID.String(), "alert", d.CollapseID, 10, d.ExpiresAt, payload)
-	outcome := classifyAPNsOutcome(d, attemptID, res, sendErr, now)
-	// Start the finalization timeout budget AFTER APNs responds so slow HTTP
+	var outcome storage.CompletePushDeliveryInput
+	if transportMode == storage.PushTransportRelay {
+		relayRes, sendErr := relaySender.SendRelay(ctx, RelayDeliveryRequest{
+			GrantSecret: d.DeviceRelayGrantSecret,
+			Kind:        d.Kind,
+			Locale:      d.Locale,
+			InboxItemID: d.InboxItemID.String(),
+			RegID:       d.BindingID.String(),
+			APNsID:      d.APNsID.String(),
+			ExpiresAt:   d.ExpiresAt.UTC().Unix(),
+		})
+		outcome = classifyRelayOutcome(d, attemptID, relayRes, sendErr, time.Now().UTC())
+	} else {
+		res, sendErr := sender.Send(ctx, d.APNsEnv, d.DeviceAPNsToken, d.APNsID.String(), "alert", d.CollapseID, 10, d.ExpiresAt, directPayload)
+		outcome = classifyAPNsOutcome(d, attemptID, res, sendErr, now)
+	}
+	// Start the finalization timeout budget AFTER transport responds so slow HTTP
 	// responses (up to the 15s client timeout) never exhaust the DB write budget.
 	if _, err := completeWithBudget(ctx, db, outcome); err != nil {
 		log.Printf("apns: complete delivery=%s state=%s: %v", d.ID, outcome.DeliveryState, err)
+	}
+}
+
+func classifyRelayOutcome(d *storage.ClaimedPushDelivery, attemptID uuid.UUID, res RelayDeliveryResult, sendErr error, now time.Time) storage.CompletePushDeliveryInput {
+	out := storage.CompletePushDeliveryInput{
+		DeliveryID:          d.ID,
+		LeaseToken:          d.LeaseToken,
+		AttemptID:           attemptID,
+		DeviceID:            d.DeviceID,
+		RegistrationVersion: d.RegistrationVersion,
+		TokenHash:           d.TokenHash,
+	}
+	if sendErr != nil || res.Outcome == RelayOutcomeAmbiguous {
+		out.DeliveryState = storage.PushDeliveryStateAmbiguous
+		out.AttemptStatus = storage.PushAttemptStatusAmbiguous
+		if res.Reason != "" {
+			out.Reason = res.Reason
+		} else {
+			out.Reason = "transport_ambiguous"
+		}
+		if res.Status > 0 {
+			code := res.Status
+			out.StatusCode = &code
+		}
+		return out
+	}
+
+	code := res.Status
+	if code > 0 {
+		out.StatusCode = &code
+	}
+	out.Reason = res.Reason
+
+	switch res.Outcome {
+	case RelayOutcomeAccepted:
+		out.DeliveryState = storage.PushDeliveryStateAccepted
+		out.AttemptStatus = storage.PushAttemptStatusAccepted
+		return out
+
+	case RelayOutcomeGrantInvalid:
+		out.DeliveryState = storage.PushDeliveryStateRejected
+		out.AttemptStatus = storage.PushAttemptStatusRejected
+		if out.Reason == "" {
+			out.Reason = "GrantInvalid"
+		}
+		out.InvalidateDevice = true
+		// Relay has already checked Apple's token timestamp; local invalidation
+		// is fenced by the binding's registration version and token hash.
+		return out
+
+	case RelayOutcomeRetryableTokenRotated:
+		delay := res.RetryAfter
+		if delay < 30*time.Second {
+			delay = 30 * time.Second
+		}
+		if delay > maxRetryDelay {
+			delay = maxRetryDelay
+		}
+		out.AttemptStatus = storage.PushAttemptStatusRetryableFailed
+		if d.Attempts < storage.PushMaxAttempts && now.Add(delay).Before(d.ExpiresAt) {
+			out.DeliveryState = storage.PushDeliveryStateRetryWait
+			out.RetryAfter = delay
+		} else {
+			out.DeliveryState = storage.PushDeliveryStateRejected
+		}
+		return out
+
+	case RelayOutcomeRetryablePreSend:
+		delay := max(retryDelay429(d.Attempts, res.RetryAfter), res.RetryAfter)
+		out.AttemptStatus = storage.PushAttemptStatusRetryableFailed
+		if d.Attempts < storage.PushMaxAttempts && now.Add(delay).Before(d.ExpiresAt) {
+			out.DeliveryState = storage.PushDeliveryStateRetryWait
+			out.RetryAfter = delay
+		} else {
+			out.DeliveryState = storage.PushDeliveryStateRejected
+		}
+		return out
+
+	case RelayOutcomeRetryableAPNs:
+		var delay time.Duration
+		if res.APNsStatus >= 500 || res.Status == 502 || res.Status == 503 {
+			delay = retryDelay5xx(d.Attempts, res.RetryAfter)
+		} else {
+			delay = retryDelay429(d.Attempts, res.RetryAfter)
+		}
+		out.AttemptStatus = storage.PushAttemptStatusRetryableFailed
+		if d.Attempts < storage.PushMaxAttempts && now.Add(delay).Before(d.ExpiresAt) {
+			out.DeliveryState = storage.PushDeliveryStateRetryWait
+			out.RetryAfter = delay
+		} else {
+			out.DeliveryState = storage.PushDeliveryStateRejected
+		}
+		return out
+
+	default:
+		out.DeliveryState = storage.PushDeliveryStateRejected
+		out.AttemptStatus = storage.PushAttemptStatusRejected
+		return out
 	}
 }
 

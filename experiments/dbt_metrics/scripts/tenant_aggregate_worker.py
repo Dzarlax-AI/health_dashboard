@@ -22,8 +22,8 @@ from psycopg2.extensions import parse_dsn
 
 PROJECT = Path(__file__).resolve().parents[1]
 FORMULA = "aggregate_serving_v3"
-SCHEMA_VERSION = 23
-SCHEMA_CHECKSUM = "e8275211b8029ac4f5b355303eb72ea4833b74c3f6a946db7bc68bc0a53a18f2"
+SCHEMA_VERSION = 24
+SCHEMA_CHECKSUM = "bb3b0d9ce8a2b77425ae4770210ccd257079f6f3ed0395f40bccb0c8e3dfa6a1"
 JOURNAL = "_cache_maintenance_v1"
 POINTS = "metric_name,date,source,qty,quality,health_record_id,origin,units,id,received_at,source_snapshot_at"
 DAILY = (

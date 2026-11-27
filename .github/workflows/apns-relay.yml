@@ -1,0 +1,89 @@
+name: APNs Relay image
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/apns-relay.yml'
+      - 'Dockerfile.apns-relay'
+      - '.dockerignore'
+      - 'cmd/apns_relay/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apns-relay.yml'
+      - 'Dockerfile.apns-relay'
+      - '.dockerignore'
+      - 'cmd/apns_relay/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+
+permissions:
+  contents: read
+
+jobs:
+  relay:
+    name: Build and verify Relay image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELAY_IMAGE: ghcr.io/dzarlax-ai/health_dashboard-apns-relay
+      RELAY_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELAY_REVISION }}
+          persist-credentials: false
+
+      - name: Build and verify image metadata
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64             -f Dockerfile.apns-relay             --build-arg "BUILD_REVISION=$RELAY_REVISION"             --tag "$RELAY_IMAGE:$RELAY_REVISION" .
+          image="$RELAY_IMAGE:$RELAY_REVISION"
+          test "$(docker image inspect --format '{{.Architecture}}' "$image")" = amd64
+          test "$(docker image inspect --format '{{.Config.User}}' "$image")" = relay
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$RELAY_REVISION"
+          test "$(docker image inspect --format '{{index .Config.Labels "io.health-dashboard.image-role"}}' "$image")" = apns-relay
+
+      - name: Pack the verified image
+        run: docker save --output "$RUNNER_TEMP/apns-relay-image.tar" "$RELAY_IMAGE:$RELAY_REVISION"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apns-relay-image-${{ env.RELAY_REVISION }}
+          path: ${{ runner.temp }}/apns-relay-image.tar
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish Relay commit image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: relay
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RELAY_IMAGE: ghcr.io/dzarlax-ai/health_dashboard-apns-relay
+      RELAY_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: apns-relay-image-${{ env.RELAY_REVISION }}
+          path: ${{ runner.temp }}
+
+      - name: Load verified image
+        run: docker load --input "$RUNNER_TEMP/apns-relay-image.tar"
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the verified commit image
+        run: docker push "$RELAY_IMAGE:$RELAY_REVISION"
