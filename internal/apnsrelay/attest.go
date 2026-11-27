@@ -294,12 +294,14 @@ func (v *AppAttestVerifier) VerifyAssertion(appleAppID string, pubKeySPKI []byte
 		return 0, fmt.Errorf("%w: signCount did not increase", ErrAssertionFailed)
 	}
 
-	// Verify ECDSA-P256 signature over SHA256(authenticatorData || clientDataHash).
+	// App Attest signs the nonce as an ECDSA-SHA256 message.
+	// VerifyASN1 takes the digest of that message.
 	h := sha256.New()
 	h.Write(authData)
 	h.Write(clientDataHash)
 	nonce := h.Sum(nil)
-	if !ecdsa.VerifyASN1(pubKey, nonce, sig) {
+	digest := sha256.Sum256(nonce)
+	if !ecdsa.VerifyASN1(pubKey, digest[:], sig) {
 		return 0, fmt.Errorf("%w: invalid signature", ErrAssertionFailed)
 	}
 	return newSignCount, nil
